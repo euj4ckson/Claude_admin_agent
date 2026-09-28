@@ -25,15 +25,17 @@ try {
   runtime = { ...runtime, pid: process.pid, phase: 'running', heartbeat: now() };
   atomicJson(store.file(id, 'active.lock'), { runId, pid: process.pid });
   atomicJson(store.file(id, 'runtime.json'), runtime);
-  const env = { ...process.env, CENTRAL_TICKETS_DATA: dataRoot, CENTRAL_TICKET_ID: ticket.id, CENTRAL_TICKET_RUN: runId };
+  const executable = ticket.agent === 'codex' ? config.codex : config.claude;
+  if (!executable) throw new Error(`${ticket.agent === 'codex' ? 'Codex CLI' : 'Claude Code'} não está configurado.`);
+  const env = { ...process.env, CENTRAL_TICKETS_DATA: dataRoot, CENTRAL_TICKET_ID: ticket.id, CENTRAL_TICKET_RUN: runId, CENTRAL_TICKET_AGENT: ticket.agent || 'claude' };
   // Edições de arquivos são aceitas automaticamente para reduzir interrupções.
   // O hook da Central continua sendo a última barreira: caminhos fora do ticket,
   // comandos sensíveis, SQL e operações fora da política permanecem bloqueados
   // ou sujeitos à confirmação manual.
-  const args = ['--name', ticket.id, '--permission-mode', 'acceptEdits', '--plugin-dir', path.join(config.appRoot, 'central'), '--settings', store.file(id, 'session-settings.json'), '--append-system-prompt', fs.readFileSync(store.file(id, 'session-context.txt'), 'utf8'), '--add-dir', store.stateDir(id), '--add-dir', path.join(config.documents_root, id.toLowerCase())];
+  const args = ticket.agent === 'codex' ? ['--ask-for-approval', 'on-request', '--sandbox', 'workspace-write', initialPrompt(store, ticket)] : ['--name', ticket.id, '--permission-mode', 'acceptEdits', '--plugin-dir', path.join(config.appRoot, 'central'), '--settings', store.file(id, 'session-settings.json'), '--append-system-prompt', fs.readFileSync(store.file(id, 'session-context.txt'), 'utf8'), '--add-dir', store.stateDir(id), '--add-dir', path.join(config.documents_root, id.toLowerCase())];
   const references = path.join(config.references_root, id.toLowerCase());
   if (fs.existsSync(references)) args.push('--add-dir', references);
-  if (ticket.sessionStarted) {
+  if (ticket.agent !== 'codex' && ticket.sessionStarted) {
     const background = await backgroundSession(config, ticket);
     if (background) {
       // A background Claude session must be opened with attach; --resume
@@ -41,16 +43,16 @@ try {
       args.length = 0;
       args.push('attach', background.id || background.sessionId.slice(0, 8));
     } else args.push('--resume', ticket.sessionId);
-  } else args.push('--session-id', ticket.sessionId, initialPrompt(store, ticket));
+  } else if (ticket.agent !== 'codex') args.push('--session-id', ticket.sessionId, initialPrompt(store, ticket));
   console.log(`\n${ticket.id} — Central de Tickets\n${ticket.worktree}\nEntrega: ${ticket.delivery === 'no_commit' ? 'sem commit' : 'commit local'}, sem push.\n`);
-  child = spawn(config.claude, args, { cwd: ticket.worktree, env, stdio: 'inherit', shell: false });
+  child = spawn(executable, args, { cwd: ticket.worktree, env, stdio: 'inherit', shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable) });
   runtime.childPid = child.pid;
   atomicJson(store.file(id, 'runtime.json'), runtime);
   heartbeat = setInterval(() => { try { atomicJson(store.file(id, 'runtime.json'), { ...runtime, heartbeat: now() }); } catch {} }, 3000);
   const code = await new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', value => resolve(value)); });
   clearInterval(heartbeat);
   atomicJson(store.file(id, 'runtime.json'), { ...runtime, phase: 'stopped', exitCode: code, endedAt: now(), heartbeat: now() });
-  store.event(id, 'sessao', `Processo Claude encerrado (${code ?? 'interrompido'}). A Central não marcou o ticket como concluído.`);
+  store.event(id, 'sessao', `Processo ${ticket.agent === 'codex' ? 'Codex' : 'Claude'} encerrado (${code ?? 'interrompido'}). A Central não marcou o ticket como concluído.`);
 } catch (e) {
   clearInterval(heartbeat); console.error(`\nNão foi possível abrir a conversa: ${e.message}`);
   if (store && runtime) { atomicJson(store.file(id, 'runtime.json'), { ...runtime, phase: 'error', error: e.message, endedAt: now() }); store.event(id, 'erro', e.message); }

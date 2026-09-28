@@ -9,6 +9,17 @@ import { launchTerminal, focusTerminal, openLocal } from './desktop.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(here, 'public');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+function listRepositories(config) {
+  const root = config.repositories_root || path.dirname(config.repository), found = [];
+  try { for (const entry of fs.readdirSync(root, { withFileTypes: true })) { if (!entry.isDirectory()) continue; const candidate = path.join(root, entry.name); if (fs.existsSync(path.join(candidate, '.git'))) { const standardized = /(?:^|_)(?:pdv|forca_de_vendas_web)$/i.test(entry.name) || /forca.?de.?vendas/i.test(entry.name); found.push({ id: entry.name, name: entry.name, path: candidate, default: path.resolve(candidate).toLowerCase() === path.resolve(config.repository).toLowerCase(), standard: standardized ? { base: 'main', integration: 'pre_main' } : null }); } } } catch {}
+  if (!found.some(x => x.default) && (fs.existsSync(path.join(config.repository, '.git')) || config.demo)) found.push({ id: path.basename(config.repository), name: path.basename(config.repository), path: config.repository, default: true, standard: null });
+  return found.sort((a, b) => Number(b.default) - Number(a.default) || a.name.localeCompare(b.name));
+}
+function resolveRepository(config, value) {
+  const selected = listRepositories(config).find(x => x.id === value || x.path === value);
+  if (!selected) throw new AppError('Selecione um repositório Git válido dentro de C:\\git.');
+  return selected;
+}
 function send(res, status, value) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); }
 async function jsonBody(req) {
   if (!String(req.headers['content-type'] || '').startsWith('application/json')) throw new AppError('Envie dados JSON.', 415);
@@ -74,11 +85,16 @@ export function createServer(config, adapters = {}) {
         };
         let memory = false;
         if (!adapters.skipMemory) { try { const r = await fetch('http://127.0.0.1:49374/admin/status', { signal: AbortSignal.timeout(1000) }); memory = r.ok; } catch {} }
-        return send(res, 200, { repository: config.repository, preferences: readJson(path.join(store.root, 'preferences.json'), {}), checks, memory, executionOwner: readJson(path.join(store.root, 'execution.lock'))?.id ?? null, demo: !!config.demo });
+        return send(res, 200, { repository: config.repository, repositories: listRepositories(config), agents: [{ id: 'claude', name: 'Claude Code', available: !!config.claude && fs.existsSync(config.claude) }, { id: 'codex', name: 'Codex CLI', available: !!config.codex && fs.existsSync(config.codex) }], preferences: readJson(path.join(store.root, 'preferences.json'), {}), checks, memory, executionOwner: readJson(path.join(store.root, 'execution.lock'))?.id ?? null, demo: !!config.demo });
       }
       if (url.pathname === '/api/tickets') {
         if (req.method === 'GET') return send(res, 200, store.list());
-        return send(res, 201, store.create(await jsonBody(req)));
+        const input = await jsonBody(req), repository = resolveRepository(config, input.repository || path.basename(config.repository)), agent = String(input.agent || 'claude').toLowerCase();
+        if (!['claude', 'codex'].includes(agent)) throw new AppError('Escolha Claude Code ou Codex CLI.');
+        if (agent === 'claude' && !config.claude) throw new AppError('Claude Code não está instalado nesta máquina.', 409);
+        if (agent === 'codex' && !config.codex) throw new AppError('Codex CLI não está instalado nesta máquina.', 409);
+        const release = input.release || repository.standard?.base || 'main';
+        return send(res, 201, store.create({ ...input, release, repository: repository.path, repositoryId: repository.id, integration_branch: input.integration_branch || repository.standard?.integration || null, agent }));
       }
       const match = /^\/api\/tickets\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname);
       if (match) {
@@ -121,7 +137,8 @@ export function createServer(config, adapters = {}) {
         if (req.method === 'POST' && action === 'start') {
           await jsonBody(req);
           if (config.demo) throw new AppError('Simulação: a abertura de sessões reais está desativada.', 409);
-          if (!config.claude || !fs.existsSync(config.claude)) throw new AppError('Claude Code não localizado. Repare a instalação antes de iniciar.', 409);
+          const agentExecutable = record.agent === 'codex' ? config.codex : config.claude;
+          if (!agentExecutable || !fs.existsSync(agentExecutable)) throw new AppError(`${record.agent === 'codex' ? 'Codex CLI' : 'Claude Code'} não localizado. Repare a instalação antes de iniciar.`, 409);
           const attachments = store.attachmentInfo(record);
           if (attachments.missing.length) throw new AppError(`Anexos informados ausentes: ${attachments.missing.join(', ')}. Abra a pasta de anexos e confira.`, 409);
           const runtime = store.reserve(id);

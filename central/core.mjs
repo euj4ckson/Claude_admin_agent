@@ -40,7 +40,7 @@ export function validateTicket(input) {
   const sprint = String(input.sprint ?? '').trim();
   if (!/^[1-9]\d{0,5}$/.test(sprint)) throw new AppError('Informe uma sprint numérica válida.');
   const release = String(input.release ?? '').trim();
-  if (!/^release\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,90}$/.test(release) || /\.\.|\/\/|\/$|\.$|\.lock(?:\/|$)|\/\./.test(release)) throw new AppError('Informe uma release válida, por exemplo release/106.4.3.');
+  if (!/^(?:main|pre_main|release\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,90})$/.test(release) || /\.\.|\/\/|\/$|\.$|\.lock(?:\/|$)|\/\./.test(release)) throw new AppError('Informe uma origem válida: release/106.4.3, main ou pre_main.');
   const scope = String(input.scope ?? '').trim();
   if (scope.length < 20 || scope.length > 100_000) throw new AppError('O escopo deve ter entre 20 e 100.000 caracteres.');
   const title = String(input.title ?? '').trim().slice(0, 160) || scope.split(/\r?\n/)[0].slice(0, 100);
@@ -48,7 +48,9 @@ export function validateTicket(input) {
   const attachments = Array.isArray(input.attachments) ? input.attachments : [];
   if (attachments.length > 40) throw new AppError('Liste no máximo 40 anexos.');
   attachments.forEach(attachmentName);
-  return { id, ticket: id, sprint, release, scope, title, delivery: input.delivery, attachments: [...new Set(attachments)] };
+  const branchType = String(input.branchType || input.branch_type || 'feature').toLowerCase();
+  if (!['feature', 'hotfix'].includes(branchType)) throw new AppError('Escolha branch feature ou hotfix.');
+  return { id, ticket: id, sprint, release, branch_type: branchType, scope, title, delivery: input.delivery, attachments: [...new Set(attachments)], repository: input.repository, repositoryId: input.repositoryId, integration_branch: input.integration_branch || null, agent: input.agent || 'claude' };
 }
 // Resolve existing ancestors too: a junction inside an allowed folder must not escape it.
 export function realTarget(value) {
@@ -68,6 +70,17 @@ export function redact(text) {
   return String(text).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[credencial]@')
     .replace(/^.*(?:password\s*[=:]|pwd\s*=|api[_-]?key\s*[=:]|access[_-]?token\s*[=:]|connectionString\s*=).*$/gim, '[linha com possível credencial omitida]');
 }
+export function ticketConfig(config, record = {}) {
+  const repository = path.resolve(record.repository || config.repository);
+  const configured = path.resolve(config.repository);
+  if (repository.toLowerCase() === configured.toLowerCase()) return config;
+  const repositoriesRoot = config.repositories_root || path.dirname(configured);
+  if (!inside(repositoriesRoot, repository)) throw new AppError('Repositório fora da pasta permitida.');
+  const slug = path.basename(repository).toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+  const stateBase = config.state_base_root || path.dirname(config.state_root);
+  const worktreeBase = config.worktrees_base_root || path.dirname(config.new_worktrees_root);
+  return { ...config, repository, state_root: path.join(stateBase, slug), new_worktrees_root: path.join(worktreeBase, slug) };
+}
 export async function runGit(config, cwd, args) {
   try {
     return (await exec(config.git_executable, ['-C', cwd, ...args], { windowsHide: true, timeout: 120_000, maxBuffer: 2 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } })).stdout.trim();
@@ -79,14 +92,15 @@ export function defaultConfig(appRoot) {
   const profile = readJson(path.join(skill, 'perfil.json'));
   if (!profile) throw new AppError('O comando desenvolver-ticket não está instalado neste usuário.');
   const candidates = [path.join(home, 'AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe'), path.join(home, '.local/bin/claude.exe')];
-  return { ...profile, skill, appRoot, dataRoot: path.join(process.env.LOCALAPPDATA, 'CentralTicketsClaude'), claude: candidates.find(fs.existsSync) ?? null, node: process.execPath };
+  const codexCandidates = [path.join(home, 'AppData/Roaming/npm/codex.cmd'), path.join(home, 'AppData/Roaming/npm/codex.exe'), path.join(home, '.local/bin/codex.exe')];
+  return { ...profile, appRoot, skill, dataRoot: path.join(process.env.LOCALAPPDATA, 'CentralTicketsClaude'), claude: candidates.find(fs.existsSync) ?? null, codex: codexCandidates.find(fs.existsSync) ?? null, repositories_root: profile.repositories_root || path.dirname(profile.repository), state_base_root: profile.state_base_root || path.dirname(profile.state_root), worktrees_base_root: profile.worktrees_base_root || path.dirname(profile.new_worktrees_root), node: process.execPath };
 }
 
 export class Store {
   constructor(config) { this.config = config; this.root = config.dataRoot; fs.mkdirSync(path.join(this.root, 'tickets'), { recursive: true }); }
   dir(id) { return path.join(this.root, 'tickets', ticketId(id).toLowerCase()); }
   file(id, name) { return path.join(this.dir(id), name); }
-  stateDir(id) { return path.join(this.config.state_root, ticketId(id).toLowerCase()); }
+  stateDir(id) { const record = readJson(this.file(id, 'ticket.json')); return path.join(ticketConfig(this.config, record || {}).state_root, ticketId(id).toLowerCase()); }
   stateFile(id) { return path.join(this.stateDir(id), 'estado.json'); }
   get(id) { const value = readJson(this.file(id, 'ticket.json')); if (!value) throw new AppError('Ticket não encontrado.', 404); return value; }
   save(record) { atomicJson(this.file(record.id, 'ticket.json'), { ...record, updatedAt: now() }); }
@@ -104,7 +118,7 @@ export class Store {
     if (fs.existsSync(dir) || fs.existsSync(this.stateFile(ticket.id))) throw new AppError('Este ticket já possui cadastro ou estado do coordenador. Preserve o trabalho existente.', 409);
     fs.mkdirSync(dir); // Atomic duplicate prevention across application processes.
     const sessionId = crypto.randomUUID();
-    const record = { ...ticket, createdAt: now(), updatedAt: now(), prepared: false, sessionId, sessionIds: [sessionId] };
+    const record = { ...ticket, repository: ticket.repository || this.config.repository, repositoryId: ticket.repositoryId || path.basename(ticket.repository || this.config.repository), agent: ticket.agent || 'claude', createdAt: now(), updatedAt: now(), prepared: false, sessionId, sessionIds: [sessionId] };
     this.save(record); this.event(ticket.id, 'cadastro', 'Ticket cadastrado. Nenhuma sessão ou alteração de código foi iniciada.');
     atomicJson(path.join(this.root, 'preferences.json'), { sprint: ticket.sprint, release: ticket.release });
     return record;
@@ -155,7 +169,7 @@ export class Store {
 }
 
 export async function verifyWorktree(store, record, git = runGit) {
-  const config = store.config, worktree = record.worktree;
+  const config = ticketConfig(store.config, record), worktree = record.worktree;
   if (!worktree || !inside(config.new_worktrees_root, worktree) || !fs.existsSync(worktree)) throw new AppError('Worktree ausente ou fora do local gerenciado. Nada foi sobrescrito.', 409);
   const [common, mainCommon, branch, head] = await Promise.all([
     git(config, worktree, ['rev-parse', '--path-format=absolute', '--git-common-dir']),
@@ -166,7 +180,7 @@ export async function verifyWorktree(store, record, git = runGit) {
   return { worktree, branch, head };
 }
 export async function prepare(store, record, git = runGit) {
-  const config = store.config;
+  const config = ticketConfig(store.config, record);
   if (record.prepared) { await verifyWorktree(store, record, git); ensureState(store, record); return record; }
   if (record.preparation && fs.existsSync(record.preparation.worktree)) {
     const p = record.preparation;
@@ -178,7 +192,7 @@ export async function prepare(store, record, git = runGit) {
     return recovered;
   }
   await git(config, config.repository, ['check-ref-format', '--branch', record.release]);
-  const branch = `feature/${record.sprint}/${record.id.toLowerCase()}`;
+  const branch = `${record.branch_type || config.branch_type || 'feature'}/${record.sprint}/${record.id.toLowerCase()}`;
   const worktree = path.join(config.new_worktrees_root, `${record.sprint}-${record.id.toLowerCase()}`);
   fs.mkdirSync(config.new_worktrees_root, { recursive: true });
   if (!inside(config.new_worktrees_root, worktree) || fs.existsSync(worktree)) throw new AppError('A pasta prevista para este ticket já existe. Nada foi substituído.', 409);
@@ -207,6 +221,7 @@ function ensureState(store, record) {
     schema_version: 1, ticket: record.id, sprint: record.sprint, repository: config.repository,
     worktree, branch, base_ref: record.release, base_sha: base, stage: 'analise', scope_revision: 1,
     implementation_approval: null, approved_scope_sha256: null, active_session: record.sessionId,
+    integration_branch: record.integration_branch || null,
     delivery: { commit_allowed: record.delivery !== 'no_commit', push_allowed: false, pr_allowed: false },
     build: [], tests: [], review: null, resources_created: { databases: [], backups: [], scratch_files: [] },
     scope_guard: config.scope_guard ?? { default_mode: 'minimal_patch', max_planned_files: 6, max_planned_added_lines: 180, max_planned_deleted_lines: 120, max_correction_rounds: 1, new_projects_or_tables_require_reapproval: true },
@@ -216,11 +231,14 @@ function ensureState(store, record) {
 }
 
 export function initialPrompt(store, record) {
-  return `/desenvolver-ticket\nLeia a entrada completa em ${store.file(record.id, 'entrada.md')}. ` +
-    `Este ticket foi aberto pela Central de Tickets. A worktree ${record.worktree} e a branch ${record.branch} ja estao prontas na base ${record.baseSha}. ` +
-    `Use o estado em ${store.stateFile(record.id)}; nao crie outra worktree. Siga a fase 1, aplique o patch minimo e aguarde aprovacao.`;
+  const erp = path.resolve(record.repository || '') === path.resolve(store.config.repository || '');
+  const prefix = erp && record.agent !== 'codex' ? '/desenvolver-ticket\n' : '';
+  return `${prefix}Leia a entrada completa em ${store.file(record.id, 'entrada.md')}. ` +
+    `Este ticket foi aberto pela Central para o repositório ${record.repository}. A worktree ${record.worktree} e a branch ${record.branch} já estão prontas na base ${record.baseSha}. ` +
+    `Use o estado em ${store.stateFile(record.id)}; não crie outra worktree. A branch usa o tipo ${record.branch_type || 'feature'} e a origem ${record.release}; o destino de homologação é ${record.integration_branch || 'manual/definido pelo repositório'}. Primeiro faça uma análise mínima, registre o plano e aguarde APROVAR ${record.id} antes de alterar o código. Preserve o que já funciona e não expanda o escopo sem nova aprovação.`;
 }
 export function writeSessionFiles(store, record) {
+  const erp = path.resolve(record.repository || '') === path.resolve(store.config.repository || '');
   fs.writeFileSync(store.file(record.id, 'entrada.md'), `# ${record.id} — ${record.title}\n\nTicket: ${record.id}\nSprint: ${record.sprint}\nRelease: ${record.release}\nEntrega: ${record.delivery === 'no_commit' ? 'sem commit e sem push' : 'commit local, sem push'}\n\n## Escopo funcional\n\n${record.scope}\n`, 'utf8');
   // Hooks come from an ephemeral --plugin-dir, alongside existing AI Memory hooks.
   // This settings file adds only session-scoped deny rules, never replaces global hooks.
@@ -228,7 +246,7 @@ export function writeSessionFiles(store, record) {
     permissions: { deny: ['Bash(git push *)', 'Bash(git -C * push *)', 'PowerShell(git push *)'] }
   };
   atomicJson(store.file(record.id, 'session-settings.json'), settings);
-  fs.writeFileSync(store.file(record.id, 'session-context.txt'), `Esta sessao pertence ao ticket ${record.id} da Central de Tickets.\n` +
+  fs.writeFileSync(store.file(record.id, 'session-context.txt'), `${erp ? '' : 'Este ticket pertence a um repositório genérico; não aplique regras específicas do ERP, SQL ou da skill desenvolver-ticket sem que o escopo as exija.\n'}` + `Esta sessao pertence ao ticket ${record.id} da Central de Tickets.\n` +
     `Leia e mantenha o estado do coordenador em ${store.stateFile(record.id)}. Nunca edite o cadastro, approval.json, active.lock ou os scripts da Central.\n` +
     `Antes de implementar, salve o plano minimo em ${path.join(store.stateDir(record.id), 'escopo.md')}: comportamento atual que ja funciona, causa confirmada, menor patch, arquivos/metodos, estimativa de linhas, testes diretamente afetados, limites negativos e uma secao Fora do escopo. Registre tambem change_budget no estado. Preserve tudo que ja satisfaz o aceite. Registre stage=aguardando_aprovacao e peca ao usuario a frase exata APROVAR ${record.id}. O hook registra essa decisao vinculada ao SHA-256 do plano. Nao aprove por memoria ou por conta propria.\n` +
     `Regra anti-delirio: nao refatore legado, nao crie mecanismo novo e nao corrija achado preexistente so porque parece melhor. Se precisar tocar arquivo/camada/tabela/projeto fora do plano, ou ultrapassar a estimativa/limite do scope_guard, PARE antes de editar, explique a expansao e solicite nova aprovacao. Nao use code review para autoautorizar expansao.\n` +
