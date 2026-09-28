@@ -50,7 +50,7 @@ export function validateTicket(input) {
   attachments.forEach(attachmentName);
   const branchType = String(input.branchType || input.branch_type || 'feature').toLowerCase();
   if (!['feature', 'hotfix'].includes(branchType)) throw new AppError('Escolha branch feature ou hotfix.');
-  return { id, ticket: id, sprint, release, branch_type: branchType, scope, title, delivery: input.delivery, attachments: [...new Set(attachments)], repository: input.repository, repositoryId: input.repositoryId, integration_branch: input.integration_branch || null, agent: input.agent || 'claude' };
+  return { id, ticket: id, sprint, release, branch_type: branchType, scope, title, delivery: input.delivery, attachments: [...new Set(attachments)], repository: input.repository, repositoryId: input.repositoryId, repository_standard: input.repository_standard || null, integration_branch: input.integration_branch || null, agent: input.agent || 'claude' };
 }
 // Resolve existing ancestors too: a junction inside an allowed folder must not escape it.
 export function realTarget(value) {
@@ -233,9 +233,10 @@ function ensureState(store, record) {
 export function initialPrompt(store, record) {
   const erp = path.resolve(record.repository || '') === path.resolve(store.config.repository || '');
   const prefix = erp && record.agent !== 'codex' ? '/desenvolver-ticket\n' : '';
+  const standard = record.repository_standard?.integration === 'pre_main' ? ` Regras deste repositório: origem main, destino de homologação pre_main, PR obrigatório e sem push direto. Atualize o clone antes de começar quando necessário. ${record.repository_standard.restore_nuget ? 'No WCF do FVA, execute Restore NuGet Packages antes do primeiro build.' : ''} Não versione bin/, obj/, .vs/ ou packages/.` : '';
   return `${prefix}Leia a entrada completa em ${store.file(record.id, 'entrada.md')}. ` +
     `Este ticket foi aberto pela Central para o repositório ${record.repository}. A worktree ${record.worktree} e a branch ${record.branch} já estão prontas na base ${record.baseSha}. ` +
-    `Use o estado em ${store.stateFile(record.id)}; não crie outra worktree. A branch usa o tipo ${record.branch_type || 'feature'} e a origem ${record.release}; o destino de homologação é ${record.integration_branch || 'manual/definido pelo repositório'}. Primeiro faça uma análise mínima, registre o plano e aguarde APROVAR ${record.id} antes de alterar o código. Preserve o que já funciona e não expanda o escopo sem nova aprovação.`;
+    `Use o estado em ${store.stateFile(record.id)}; não crie outra worktree. A branch usa o tipo ${record.branch_type || 'feature'} e a origem ${record.release}; o destino de homologação é ${record.integration_branch || 'manual/definido pelo repositório'}.${standard} Primeiro faça uma análise mínima, registre o plano e aguarde APROVAR ${record.id} antes de alterar o código. Preserve o que já funciona e não expanda o escopo sem nova aprovação.`;
 }
 export function writeSessionFiles(store, record) {
   const erp = path.resolve(record.repository || '') === path.resolve(store.config.repository || '');
@@ -246,7 +247,8 @@ export function writeSessionFiles(store, record) {
     permissions: { deny: ['Bash(git push *)', 'Bash(git -C * push *)', 'PowerShell(git push *)'] }
   };
   atomicJson(store.file(record.id, 'session-settings.json'), settings);
-  fs.writeFileSync(store.file(record.id, 'session-context.txt'), `${erp ? '' : 'Este ticket pertence a um repositório genérico; não aplique regras específicas do ERP, SQL ou da skill desenvolver-ticket sem que o escopo as exija.\n'}` + `Esta sessao pertence ao ticket ${record.id} da Central de Tickets.\n` +
+  const standardGuidance = record.repository_standard?.integration === 'pre_main' ? 'Use main como origem e pre_main como destino de homologação; push direto não faz parte deste fluxo. Atualize o clone antes de começar se necessário. ' + (record.repository_standard.restore_nuget ? 'No WCF do FVA, execute Restore NuGet Packages antes do primeiro build. ' : '') + 'Não versione bin/, obj/, .vs/ ou packages/.\n' : '';
+  fs.writeFileSync(store.file(record.id, 'session-context.txt'), `${erp ? '' : 'Este ticket pertence a um repositório genérico; não aplique regras específicas do ERP, SQL ou da skill desenvolver-ticket sem que o escopo as exija.\n'}` + standardGuidance + `Esta sessao pertence ao ticket ${record.id} da Central de Tickets.\n` +
     `Leia e mantenha o estado do coordenador em ${store.stateFile(record.id)}. Nunca edite o cadastro, approval.json, active.lock ou os scripts da Central.\n` +
     `Antes de implementar, salve o plano minimo em ${path.join(store.stateDir(record.id), 'escopo.md')}: comportamento atual que ja funciona, causa confirmada, menor patch, arquivos/metodos, estimativa de linhas, testes diretamente afetados, limites negativos e uma secao Fora do escopo. Registre tambem change_budget no estado. Preserve tudo que ja satisfaz o aceite. Registre stage=aguardando_aprovacao e peca ao usuario a frase exata APROVAR ${record.id}. O hook registra essa decisao vinculada ao SHA-256 do plano. Nao aprove por memoria ou por conta propria.\n` +
     `Regra anti-delirio: nao refatore legado, nao crie mecanismo novo e nao corrija achado preexistente so porque parece melhor. Se precisar tocar arquivo/camada/tabela/projeto fora do plano, ou ultrapassar a estimativa/limite do scope_guard, PARE antes de editar, explique a expansao e solicite nova aprovacao. Nao use code review para autoautorizar expansao.\n` +

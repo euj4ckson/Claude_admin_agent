@@ -11,7 +11,7 @@ const publicRoot = path.join(here, 'public');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
 function listRepositories(config) {
   const root = config.repositories_root || path.dirname(config.repository), found = [];
-  try { for (const entry of fs.readdirSync(root, { withFileTypes: true })) { if (!entry.isDirectory()) continue; const candidate = path.join(root, entry.name); if (fs.existsSync(path.join(candidate, '.git'))) { const standardized = /(?:^|_)(?:pdv|forca_de_vendas_web)$/i.test(entry.name) || /forca.?de.?vendas/i.test(entry.name); found.push({ id: entry.name, name: entry.name, path: candidate, default: path.resolve(candidate).toLowerCase() === path.resolve(config.repository).toLowerCase(), standard: standardized ? { base: 'main', integration: 'pre_main' } : null }); } } } catch {}
+  try { for (const entry of fs.readdirSync(root, { withFileTypes: true })) { if (!entry.isDirectory()) continue; const candidate = path.join(root, entry.name); if (fs.existsSync(path.join(candidate, '.git'))) { const name = entry.name.toLowerCase(); const standardized = /(?:^|_)(?:pdv|fva|forca_de_vendas_web|wcf_fvan|modulo_especifico)$/.test(name) || /forca.?de.?vendas/.test(name); const wcf = name.includes('wcf_fvan'); const standard = standardized ? { base: 'main', integration: 'pre_main', pull_before_start: wcf || name.includes('modulo_especifico'), restore_nuget: wcf, no_binary_commit: true } : null; found.push({ id: entry.name, name: entry.name, path: candidate, default: path.resolve(candidate).toLowerCase() === path.resolve(config.repository).toLowerCase(), standard }); } } } catch {}
   if (!found.some(x => x.default) && (fs.existsSync(path.join(config.repository, '.git')) || config.demo)) found.push({ id: path.basename(config.repository), name: path.basename(config.repository), path: config.repository, default: true, standard: null });
   return found.sort((a, b) => Number(b.default) - Number(a.default) || a.name.localeCompare(b.name));
 }
@@ -94,7 +94,7 @@ export function createServer(config, adapters = {}) {
         if (agent === 'claude' && !config.claude) throw new AppError('Claude Code não está instalado nesta máquina.', 409);
         if (agent === 'codex' && !config.codex) throw new AppError('Codex CLI não está instalado nesta máquina.', 409);
         const release = input.release || repository.standard?.base || 'main';
-        return send(res, 201, store.create({ ...input, release, repository: repository.path, repositoryId: repository.id, integration_branch: input.integration_branch || repository.standard?.integration || null, agent }));
+        return send(res, 201, store.create({ ...input, release, repository: repository.path, repositoryId: repository.id, repository_standard: repository.standard, integration_branch: input.integration_branch || repository.standard?.integration || null, agent }));
       }
       const match = /^\/api\/tickets\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname);
       if (match) {
