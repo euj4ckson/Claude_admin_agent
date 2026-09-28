@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { Store, AppError, defaultConfig, atomicJson, readJson, ticketId, attachmentName, prepare, verifyWorktree, writeSessionFiles, runGit, inside, redact, now } from './core.mjs';
+import { Store, AppError, defaultConfig, atomicJson, readJson, ticketId, attachmentName, prepare, verifyWorktree, writeSessionFiles, runGit, inside, redact, now, ticketConfig } from './core.mjs';
 import { launchTerminal, focusTerminal, openLocal } from './desktop.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -123,7 +123,7 @@ export function createServer(config, adapters = {}) {
           const kind = url.searchParams.get('kind');
           if (!['plan', 'input'].includes(kind)) throw new AppError('Conteúdo inválido.');
           const file = kind === 'plan' ? path.join(store.stateDir(id), 'escopo.md') : store.file(id, 'entrada.md');
-          const root = kind === 'plan' ? config.state_root : store.root;
+          const root = kind === 'plan' ? ticketConfig(config, record).state_root : store.root;
           if (!inside(root, file)) throw new AppError('Arquivo fora da pasta do ticket.', 403);
           const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').slice(0, 150_000) : kind === 'input' ? record.scope : null;
           return send(res, 200, { text });
