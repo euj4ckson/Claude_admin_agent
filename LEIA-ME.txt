@@ -1,0 +1,44 @@
+ATALHO CLAUDE + CODEX + AI MEMORY PARA WINDOWS
+
+1. Leve a pasta ou o ZIP ao PC desejado e extraia todos os arquivos.
+2. Execute instalar.cmd com seu usuario normal e aceite solicitacoes do Windows, se aparecerem.
+3. O instalador valida Node.js/npm, Claude Code, Codex CLI, Git e AI Memory.
+4. O que estiver ausente e instalado automaticamente:
+   - Node.js LTS (que inclui npm);
+   - Claude Code via npm: @anthropic-ai/claude-code;
+   - Codex CLI via npm: @openai/codex;
+   - Git for Windows via WinGet, quando necessario;
+   - AI Memory pelo binario nativo oficial para Windows x64.
+5. O AI Memory e iniciado e integrado por MCP e hooks ao Claude e ao Codex.
+6. O atalho "Claude e Codex Administrador" e criado na Area de Trabalho.
+7. Ao abrir o atalho, aceite a solicitacao de administrador e escolha um repositorio Git listado em C:\git. Digite 0 para cancelar a abertura dos agentes.
+8. Duas janelas de terminal serao abertas no repositorio escolhido: uma para Claude e outra para Codex. Em cada janela, escolha 1 (ou Enter) para nova conversa; 2 para selecionar uma conversa anterior.
+
+Cada janela de terminal recebe seu proprio titulo e icone na barra de tarefas: o icone laranja do Claude para Claude Code e o simbolo da OpenAI para Codex. O instalador usa o icone incorporado no aplicativo quando disponivel e mantem icones locais como fallback.
+
+MONITOR NOS ICONES OCULTOS
+
+O instalador adiciona o "AI Memory Monitor" aos aplicativos de inicializacao do Windows. O circulo na bandeja e atualizado a cada 2 segundos:
+- verde: servidor ativo;
+- amarelo: verificando ou reiniciando;
+- vermelho: servidor parado.
+
+Se o servidor parar por duas verificacoes consecutivas, o monitor tenta reinicia-lo automaticamente. Clique duas vezes no icone para ver detalhes. No clique direito estao disponiveis: verificar agora, reiniciar, abrir logs, abrir dados e sair do monitor. Sair do monitor nao encerra o servidor AI Memory.
+
+O mesmo menu possui duas opcoes persistentes: "Abrir Claude com o atalho" e "Abrir Codex com o atalho". Desmarque a IA que nao deve ser aberta. Se uma CLI nao estiver instalada ou tiver mudado de local, o inicializador a ignora em vez de gerar uma janela com erro. Mesmo com as duas desativadas, o atalho continua iniciando e monitorando o AI Memory.
+
+No primeiro uso de cada CLI, entre na respectiva conta quando solicitado. Assinaturas e permissoes de conta nao sao criadas pelo instalador.
+
+Os terminais dos agentes comecam no repositorio escolhido em C:\git. A lista inclui as pastas diretamente dentro de C:\git que contem .git. O AI Memory usa dados em %LOCALAPPDATA%\ai-memory e escuta somente em 127.0.0.1:49374. Ele e iniciado em segundo plano antes dos agentes sempre que o atalho e aberto. Nenhuma chave de API e necessaria para o modo basico de memoria.
+
+O inicializador fica em %LOCALAPPDATA%\ClaudeCodexLauncher. Em uma maquina nova, o binario do AI Memory fica em %LOCALAPPDATA%\AI Memory\bin. Se uma instalacao existente for encontrada, ela e preservada e reutilizada.
+
+O suporte nativo do AI Memory no Windows ainda e classificado pelo projeto como experimental. Windows x64 e necessario para o binario nativo; em outras arquiteturas, use WSL2.
+
+Para atualizar os caminhos ou reparar as integracoes, execute instalar.cmd novamente. Os comandos de integracao do AI Memory sao idempotentes e criam backups quando alteram configuracoes.
+
+Referencias:
+https://code.claude.com/docs/en/installation
+https://developers.openai.com/codex/cli/
+https://github.com/akitaonrails/ai-memory
+https://github.com/akitaonrails/ai-memory/blob/main/docs/windows.md

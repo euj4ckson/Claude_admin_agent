@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Central de Tickets</title>
+  <link rel="icon" href="/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/components.css"><link rel="stylesheet" href="/markdown.css"><link rel="stylesheet" href="/attachments.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/"><img src="/mark.svg" alt="" width="38" height="38"><span>Central<span class="brand-sub">DE TICKETS</span></span></a>
+    <div class="workspace-label">SEU ESPAÇO DE TRABALHO</div>
+    <button class="nav-item selected" data-filter="all"><span>▦</span> Todos os tickets <b id="nav-count">0</b></button>
+    <button class="nav-item" data-filter="attention"><span>◉</span> Precisam de você <b id="nav-attention">0</b></button>
+    <button class="nav-item" data-filter="done"><span>✓</span> Entregues</button>
+    <div class="sidebar-note"><span class="small-dot"></span> Trabalho local<p>Uma conversa por ticket.<br>Seu contexto, organizado.</p></div>
+    <div class="sidebar-footer"><div class="avatar">J</div><div>Jackson<span>Claude Code · ERP SS Union</span></div></div>
+  </aside>
+  <main>
+    <header class="topbar"><span class="breadcrumb">Desenvolvimento <span>/</span> Central de tickets</span><div class="connection" id="connection">Conectando…</div></header>
+    <section class="page-head"><div><div class="eyebrow">DO ESCOPO À ENTREGA</div><h1>Seu trabalho, em um só lugar.</h1><p>Inicie um ticket, acompanhe a análise e retome de onde parou.</p></div><button class="primary" id="new-ticket">＋ Novo ticket</button></section>
+    <div id="environment" class="environment" hidden></div>
+    <section class="stats" aria-label="Resumo"><div><span>Tickets</span><strong id="stat-total">0</strong><small>na sua central</small></div><div><span>Conversas abertas</span><strong id="stat-running">0</strong><small>sessões identificadas</small></div><div><span>Precisam de você</span><strong id="stat-attention">0</strong><small>aprovação ou validação</small></div><div><span>Entregues</span><strong id="stat-done">0</strong><small>conclusão informada pelo coordenador</small></div></section>
+    <section class="workspace">
+      <div class="ticket-panel"><div class="panel-head"><h2>Tickets <span id="list-count">0</span></h2><button class="text-button" id="refresh">Atualizar ↻</button></div><label class="search"><span>⌕</span><input id="search" type="search" placeholder="Buscar ticket ou descrição" aria-label="Buscar ticket ou descrição"></label><div class="filter-row"><button class="chip active" data-filter="all">Todos</button><button class="chip" data-filter="attention">Aguardando você</button><button class="chip" data-filter="done">Entregues</button></div><div id="ticket-list" class="ticket-list"></div></div>
+      <div id="detail" class="detail-panel"></div>
+    </section>
+    <footer class="page-footer"><span id="repo-label"></span><span>Local · Aprovação na conversa · Sem publicação automática</span></footer>
+  </main>
+  <dialog id="ticket-dialog">
+    <form id="ticket-form"><div class="dialog-head"><div class="eyebrow">NOVO DESENVOLVIMENTO</div><h2 id="form-title">Vamos organizar o próximo ticket.</h2><p>O cadastro não inicia a execução. Você confere tudo antes de abrir o Claude.</p></div>
+      <div class="form-grid"><label>Ticket<input name="ticket" required placeholder="GER5800" maxlength="16" autocomplete="off"></label><label>Sprint<input name="sprint" required inputmode="numeric" placeholder="165" maxlength="6"></label><label class="wide">Release de origem<input name="release" required placeholder="release/106.4.3" maxlength="100"></label><label class="wide">Descrição curta <span class="optional">opcional</span><input name="title" placeholder="Ex.: Ajuste na conciliação bancária" maxlength="160"></label><label class="wide">Escopo completo do PO<textarea name="scope" required rows="7" minlength="20" maxlength="100000" placeholder="Cole o escopo funcional, as regras de negócio, os critérios de aceite e o cenário de validação."></textarea></label><label class="wide">Anexos do ticket <span class="optional">opcional</span><input id="attachments-files" name="files" type="file" multiple><small id="selected-files" class="file-selection">Nenhum arquivo selecionado.</small><textarea name="attachments" rows="2" placeholder="Ou informe nomes que serão colocados na pasta de referência, um por linha."></textarea></label><label class="wide">Como entregar<select name="delivery"><option value="local_commit_only">Commit local, sem push</option><option value="no_commit">Deixar alterações sem commit</option></select></label></div>
+      <p class="form-hint">O plano será apresentado para sua aprovação antes de alterar o código.</p><div id="form-error" class="form-error" role="alert" hidden></div><div class="dialog-actions"><button type="button" class="secondary" id="cancel-form">Cancelar</button><button type="submit" class="primary" id="save-ticket">Cadastrar ticket</button></div>
+    </form>
+  </dialog>
+  <dialog id="content-dialog"><div class="content-head"><div><h2 id="content-title"></h2><p class="content-hint">Visualização formatada para leitura; o texto bruto continua disponível para conferência.</p></div><div class="content-actions"><button class="secondary active" id="show-rendered" type="button">Formatado</button><button class="secondary" id="show-raw" type="button">Texto bruto</button><button class="secondary" id="close-content" type="button">Fechar</button></div></div><article id="content-rendered" class="markdown-view"></article><pre id="content-text" hidden></pre></dialog>
+  <input id="detail-files" type="file" multiple hidden>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>

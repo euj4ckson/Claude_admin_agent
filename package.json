@@ -1,0 +1,11 @@
+{
+  "name": "central-tickets-claude",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node central/server.mjs",
+    "test": "node --test central/tests/*.test.mjs"
+  }
+}

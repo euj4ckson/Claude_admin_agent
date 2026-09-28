@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"","timeout":12}]}],
+    "UserPromptSubmit": [{"hooks": [{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"","timeout":12}]}],
+    "PreToolUse": [{"hooks": [{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"","timeout":12}]}],
+    "PostToolUse": [{"hooks": [{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"","timeout":12}]}],
+    "PostToolUseFailure": [{"hooks": [{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"","timeout":12}]}],
+    "Stop": [{"hooks": [{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"","timeout":12}]}],
+    "SessionEnd": [{"hooks": [{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"","timeout":12}]}]
+  }
+}
