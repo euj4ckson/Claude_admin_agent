@@ -5,6 +5,7 @@ import { inside, readJson, atomicJson, alive, hash, now, AppError } from './core
 export const criticalStage = stage => ['compilacao', 'testes'].includes(stage);
 const deny = reason => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
 const ask = reason => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } });
+const allow = reason => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: reason } });
 
 export function approvalPrompt(store, ticket, input) {
   // Only the exact user confirmation counts, not a quoted example inside a PO description.
@@ -82,6 +83,8 @@ export function preTool(store, ticket, runtime, input) {
     }
     const owner = acquireExecution(store, ticket, runtime);
     if (owner) return deny(`O recurso de compilação/testes está reservado por ${owner}. Informe a espera e encerre o turno. Retome quando o recurso estiver livre; não execute em paralelo nem contorne a reserva.`);
+    const safeBuild = /(?:MSBuild(?:\.exe)?|msbuild)\b[\s\S]*\/t\s*:\s*Build\b/i.test(command) && !/(?:\/t\s*:\s*(?:Clean|Rebuild|Restore)|-t\s*(?:Clean|Rebuild|Restore)|restore|clean|rebuild)/i.test(command);
+    if (safeBuild && approved && criticalStage(state?.stage)) return allow('Build MSBuild aprovado automaticamente na etapa de compilação; nenhuma confirmação adicional é necessária.');
   }
   if (!approved) return ask('Fase de análise: autorize apenas consultas necessárias. Alteração de código depende da aprovação do plano.');
   return {};
