@@ -142,7 +142,8 @@ export class Store {
     try { state = this.state(id); } catch (e) { stateError = e.message; }
     const runtime = this.runtime(id), running = !!runtime && (alive(runtime.pid) || alive(runtime.childPid)) && ['starting', 'running'].includes(runtime.phase);
     const session = running ? (Date.now() - Date.parse(runtime.heartbeat || runtime.startedAt) > 25_000 ? 'uncertain' : 'running') : runtime ? 'stopped' : 'none';
-    const stage = stateError ? 'bloqueado' : state?.stage in STAGES ? state.stage : ticket.prepared ? 'analise' : 'cadastrado';
+    const rawStage = state?.stage === 'entregue' ? 'concluido' : state?.stage;
+    const stage = stateError ? 'bloqueado' : rawStage in STAGES ? rawStage : ticket.prepared ? 'analise' : 'cadastrado';
     let attachments; try { attachments = this.attachmentInfo(ticket); } catch (e) { attachments = { names: [], missing: [], error: e.message }; }
     return { ...ticket, stage, stageLabel: STAGES[stage], state: state ?? null, stateError, session, runtime, approval: this.currentApproval(id), attachments, events: this.events(id) };
   }
@@ -254,6 +255,6 @@ export function writeSessionFiles(store, record) {
     `Regra anti-delirio: nao refatore legado, nao crie mecanismo novo e nao corrija achado preexistente so porque parece melhor. Se precisar tocar arquivo/camada/tabela/projeto fora do plano, ou ultrapassar a estimativa/limite do scope_guard, PARE antes de editar, explique a expansao e solicite nova aprovacao. Nao use code review para autoautorizar expansao.\n` +
     `Faca primeiro uma prova de suficiencia: escreva qual regra existente ja atende, qual linha/condicao causa o defeito e por que a correcao minima resolve. Uma rodada de correcao e o padrao; nova rodada exige decisao do usuario.\n` +
     `Antes de comandos de compilacao/testes/limpeza de banco, registre stage=compilacao ou testes. Execute esses comandos de forma sincrona. A central concede um recurso compartilhado de execucao a uma sessao por vez. Se ele estiver ocupado, informe o ticket dono, encerre o turno e aguarde o usuario pedir para continuar; nao faca tentativas repetidas nem contorne o controle.\n` +
-    `Ao sair dessa etapa, atualize stage e devolva o recurso; SessionEnd tambem libera a reserva. Nao publique branch, PR nem mensagens. A entrega configurada e ${record.delivery}.\n` +
+    `Ao sair dessa etapa, atualize stage e devolva o recurso; SessionEnd tambem libera a reserva. Se o usuario determinar que o ticket deve ser entregue, registre stage=concluido (a Central tambem aceita o legado stage=entregue), delivered.at, commits e pendencias declaradas. Nao publique branch, PR nem mensagens. A entrega configurada e ${record.delivery}.\n` +
     `Apos compactacao, releia o estado e a skill desenvolver-ticket. Se o usuario pedir outra tarefa/ticket, oriente abrir outra sessao pela Central.\n`, 'utf8');
 }
