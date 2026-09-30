@@ -97,7 +97,15 @@ export function defaultConfig(appRoot) {
 }
 
 export class Store {
-  constructor(config) { this.config = config; this.root = config.dataRoot; fs.mkdirSync(path.join(this.root, 'tickets'), { recursive: true }); }
+  constructor(config) {
+    this.config = config;
+    this.root = config.dataRoot;
+    fs.mkdirSync(path.join(this.root, 'tickets'), { recursive: true });
+    // A terminal/agent can be closed abruptly, leaving a lock behind without
+    // giving SessionEnd a chance to release it. Reconcile those locks whenever
+    // a Central process or hook touches the store.
+    this.reapStaleLocks();
+  }
   dir(id) { return path.join(this.root, 'tickets', ticketId(id).toLowerCase()); }
   file(id, name) { return path.join(this.dir(id), name); }
   stateDir(id) { const record = readJson(this.file(id, 'ticket.json')); return path.join(ticketConfig(this.config, record || {}).state_root, ticketId(id).toLowerCase()); }
@@ -105,6 +113,54 @@ export class Store {
   get(id) { const value = readJson(this.file(id, 'ticket.json')); if (!value) throw new AppError('Ticket não encontrado.', 404); return value; }
   save(record) { atomicJson(this.file(record.id, 'ticket.json'), { ...record, updatedAt: now() }); }
   runtime(id) { return readJson(this.file(id, 'runtime.json')); }
+  reapStaleLocks() {
+    const cleaned = [];
+    const optionalJson = file => {
+      try { return { value: readJson(file), valid: true }; }
+      catch { return { value: null, valid: false }; }
+    };
+    const markStopped = (id, runtime, reason) => {
+      if (!runtime || !['starting', 'running'].includes(runtime.phase)) return;
+      const endedAt = now();
+      atomicJson(this.file(id, 'runtime.json'), { ...runtime, phase: 'stopped', endedAt, heartbeat: runtime.heartbeat ?? null, recovery: reason });
+    };
+    const ticketRoot = path.join(this.root, 'tickets');
+    let entries = [];
+    try { entries = fs.readdirSync(ticketRoot, { withFileTypes: true }); } catch { return cleaned; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^[a-z]{2,8}\d{2,8}$/i.test(entry.name)) continue;
+      const id = entry.name.toUpperCase(), lockFile = this.file(id, 'active.lock'), lockResult = optionalJson(lockFile), runtimeResult = optionalJson(this.file(id, 'runtime.json'));
+      // Never delete a malformed lock/state file automatically: preserve it
+      // for diagnosis and let the normal corrupted-state guard report it.
+      if (!lockResult.valid || !runtimeResult.valid) continue;
+      const lock = lockResult.value, runtime = runtimeResult.value;
+      const pids = [lock?.pid, runtime?.pid, runtime?.childPid].filter(Number.isSafeInteger);
+      if (lock && !pids.some(alive)) {
+        try { fs.unlinkSync(lockFile); } catch (e) { if (e.code !== 'ENOENT') continue; }
+        markStopped(id, runtime, 'stale_lock_recovered');
+        try { this.event(id, 'recuperacao', 'Reserva de sessão órfã liberada automaticamente: nenhum processo do ticket estava vivo.'); } catch {}
+        cleaned.push(id);
+      } else if (!lock && runtime && ['starting', 'running'].includes(runtime.phase) && ![runtime.pid, runtime.childPid].some(alive)) {
+        markStopped(id, runtime, 'stale_runtime_recovered');
+      }
+    }
+    const resourceFile = path.join(this.root, 'execution.lock'), ownerResult = optionalJson(resourceFile);
+    if (!ownerResult.valid) return cleaned;
+    const owner = ownerResult.value;
+    if (owner) {
+      const runtimeResult = optionalJson(this.file(owner.id, 'runtime.json'));
+      if (!runtimeResult.valid) return cleaned;
+      const runtime = runtimeResult.value;
+      const pids = [owner.pid, runtime?.pid, runtime?.childPid].filter(Number.isSafeInteger);
+      if (!pids.some(alive)) {
+        try { fs.unlinkSync(resourceFile); } catch (e) { if (e.code !== 'ENOENT') return cleaned; }
+        markStopped(owner.id, runtime, 'stale_execution_lock_recovered');
+        try { this.event(owner.id, 'recuperacao', 'Reserva compartilhada de compilação/testes órfã liberada automaticamente.'); } catch {}
+        cleaned.push(`${owner.id}:execution`);
+      }
+    }
+    return cleaned;
+  }
   event(id, type, message) {
     fs.mkdirSync(this.dir(id), { recursive: true });
     fs.appendFileSync(this.file(id, 'events.jsonl'), JSON.stringify({ at: now(), type, message: redact(message).slice(0, 1600) }) + '\n', { mode: 0o600 });

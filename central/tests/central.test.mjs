@@ -58,6 +58,19 @@ test('session lock rejects duplicate and live orphan child, accepts dead lock', 
   store.release(ticket.id,run.runId); assert.ok(fs.existsSync(store.file(ticket.id,'active.lock')));
   store.release(ticket.id,recovered.runId); assert.ok(!fs.existsSync(store.file(ticket.id,'active.lock')));
 });
+test('a new Central store recovers dead session and execution locks', t => {
+  const {store,ticket,config} = fixture(t);
+  const stale = { runId: 'stale-run', id: ticket.id, pid: 2147483000, phase: 'running', startedAt: '2026-01-01T00:00:00.000Z', heartbeat: '2026-01-01T00:00:01.000Z', childPid: 2147483001 };
+  atomicJson(store.file(ticket.id,'active.lock'), stale);
+  atomicJson(store.file(ticket.id,'runtime.json'), stale);
+  atomicJson(path.join(config.dataRoot,'execution.lock'), { id: ticket.id, runId: stale.runId, pid: stale.pid, at: stale.startedAt });
+  const recovered = new Store(config);
+  assert.equal(fs.existsSync(recovered.file(ticket.id,'active.lock')), false);
+  assert.equal(fs.existsSync(path.join(config.dataRoot,'execution.lock')), false);
+  assert.equal(recovered.runtime(ticket.id).phase, 'stopped');
+  assert.equal(recovered.runtime(ticket.id).recovery, 'stale_lock_recovered');
+  assert.ok(recovered.events(ticket.id).some(x => x.type === 'recuperacao'));
+});
 test('write controls and no-commit policy preserve ticket boundaries', t => {
   const {store,ticket,config,dir} = fixture(t);
   ticket.worktree = path.join(config.new_worktrees_root,'165-ger5800');
