@@ -6,8 +6,10 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { Store, validateTicket, atomicJson, readJson, inside, prepare, verifyWorktree, writeSessionFiles, qualityReport } from '../core.mjs';
+import { Store, validateTicket, atomicJson, readJson, inside, prepare, verifyWorktree, writeSessionFiles, qualityReport, preflightReport } from '../core.mjs';
 import { approvalPrompt, preTool, acquireExecution, releaseExecution } from '../policy.mjs';
+import { recordHookMetric, metricsSnapshot } from '../metrics.mjs';
+import { syncLearning } from '../memory.mjs';
 import { createServer } from '../server.mjs';
 import { htmlToText, parseAzureReference, safeRemoteName } from '../azure.mjs';
 
@@ -153,6 +155,7 @@ test('real isolated Git worktree preparation, reuse and interrupted preparation 
   const mcp = readJson(store.file(ticket.id,'mcp-servers.json')); assert.equal(mcp.mcpServers['central-computer'].args[0], path.join(config.appRoot, 'central', 'computer-use.mjs')); assert.match(fs.readFileSync(store.file(ticket.id,'session-context.txt'),'utf8'),/computer_screenshot/);
   assert.ok(fs.existsSync(path.join(store.stateDir(ticket.id),'test-matrix.json')));
   assert.ok(fs.existsSync(path.join(store.stateDir(ticket.id),'evidence-manifest.json')));
+  assert.equal(preflightReport(store, prepared).ok, true);
   const guidance = fs.readFileSync(store.file(ticket.id,'session-context.txt'),'utf8');
   assert.match(guidance,/sequencias de transicao/);
   assert.match(guidance,/preferencia persistente/);
@@ -163,6 +166,21 @@ test('real isolated Git worktree preparation, reuse and interrupted preparation 
   const second = store.create(input('GER5801'));
   const planned = path.join(config.new_worktrees_root,'165-ger5801'); fs.mkdirSync(planned); fs.writeFileSync(path.join(planned,'keep.txt'),'keep');
   await assert.rejects(prepare(store,second)); assert.equal(fs.readFileSync(path.join(planned,'keep.txt'),'utf8'),'keep');
+});
+
+test('session metrics, risk and memory-safe quality telemetry are recorded', t => {
+  const {store,ticket} = fixture(t);
+  atomicJson(store.stateFile(ticket.id), {schema_version:2, stage:'implementacao', tests:[], build:[], review:null, scope_revision:2, change_budget:{correction_rounds:1,approved_expansion:true}});
+  recordHookMetric(store,ticket,{hook_event_name:'SessionStart',session_id:ticket.sessionId});
+  recordHookMetric(store,ticket,{hook_event_name:'UserPromptSubmit',prompt:'implementar correcao pequena'});
+  recordHookMetric(store,ticket,{hook_event_name:'PreToolUse',tool_input:{command:'git status'}});
+  const raw = readJson(store.file(ticket.id,'metrics.json')); assert.ok(raw.totals.estimated_input_tokens > 0); assert.equal(raw.totals.tool_calls,1);
+  const report = qualityReport(store,ticket,store.state(ticket.id)); assert.equal(report.metrics.scope_expansions,1); assert.equal(report.metrics.tokens.estimated_total > 0,true); assert.equal(report.metrics.tests_not_executed,0);
+});
+
+test('AI Memory sync never loses learning when the local API is unavailable', async t => {
+  const {config} = fixture(t), result = await syncLearning(config, {ticket:'GER5803', title:'aprendizado sanitizado'}, {fetchImpl: async () => new Response('offline', {status:503})});
+  assert.equal(result.remote,'queued'); assert.ok(fs.existsSync(result.outbox)); assert.match(fs.readFileSync(result.outbox,'utf8'),/GER5803/);
 });
 
 test('quality gate requires concrete evidence and prevents false delivery', t => {

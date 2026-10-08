@@ -149,6 +149,8 @@ Cada worktree nova recebe `test-matrix.json`, `evidence-manifest.json` e a pasta
 
 O commit local e bloqueado quando faltam compilacao, testes, revisao, esperado/obtido ou evidencias declaradas. O status **Entregue** e bloqueado quando ha resultado falho, pendente, bloqueado ou nao executado, quando um teste de tela nao tem screenshot, ou quando o documento final/evidencias informados nao existem. A tela mostra os motivos concretos para correcao, em vez de aceitar apenas um `estado.json` autoafirmado.
 
+O acompanhamento tambem registra semaforo de risco, tokens estimados por fase, expansoes de escopo, revisoes, tempo em bloqueio, testes nao executados e achados encontrados no review. O endpoint `/api/tickets/<TICKET>/metrics` expoe esses dados. Ao encerrar a sessao, um resumo sanitizado e sincronizado com o AI Memory quando a API local estiver disponivel; em caso de indisponibilidade, fica preservado em `ai-memory-outbox.jsonl` para reenvio.
+
 ## Estrutura principal
 
 ```text

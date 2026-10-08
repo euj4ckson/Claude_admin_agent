@@ -72,7 +72,7 @@ export function preTool(store, ticket, runtime, input) {
     if (!Array.isArray(state?.build) || !state.build.length || !Array.isArray(state?.tests) || !state.tests.length || !state.review) return deny('Registre compilação, testes e revisão no estado antes do commit. Registros são evidências a conferir, não certificação automática.');
     if (!['entrega', 'aguardando_validacao_manual'].includes(state.stage)) return deny('Conclua a etapa de revisão e registre as pendências antes de commitar.');
   }
-    const quality = /\bgit(?:\.exe)?\b[\s\S]*\bcommit\b/i.test(command) ? qualityReport(store, ticket, state) : { commitReady: true, structural: [] };
+    const quality = /\bgit(?:\.exe)?\b[\s\S]*\bcommit\b/i.test(command) ? qualityReport(store, ticket, state, { checkDiff: true }) : { commitReady: true, structural: [] };
     if (!quality.commitReady) return deny(`Gate de qualidade bloqueou o commit: ${quality.structural.slice(0, 4).join('; ')}. Registre evidências concretas antes de commitar.`);
   const sharedCommand = /\b(?:msbuild(?:\.exe)?|sqlcmd(?:\.exe)?|vstest(?:\.console)?(?:\.exe)?|dotnet\s+(?:build|test))\b/i.test(command);
   if (sharedCommand || criticalStage(state?.stage)) {

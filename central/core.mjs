@@ -3,6 +3,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { execFileSync } from 'node:child_process';
+import { metricsSnapshot } from './metrics.mjs';
 
 const exec = promisify(execFile);
 export const now = () => new Date().toISOString();
@@ -41,7 +43,22 @@ function resolveEvidencePath(store, record, value) {
  * structural readiness (safe to commit) from delivery readiness (safe to mark
  * delivered). State entries are evidence pointers, not a self-certification.
  */
-export function qualityReport(store, record, state = null) {
+function actualDiff(store, record, state) {
+  if (!record.prepared || !record.worktree || !state?.base_sha) return { files: [], added: 0, deleted: 0, outside: [], inspected: false };
+  try {
+    const git = (args) => execFileSync(store.config.git_executable, ['-C', record.worktree, ...args], { encoding: 'utf8', windowsHide: true, timeout: 20_000, maxBuffer: 4 * 1024 * 1024 }).trim();
+    const tracked = git(['diff', '--name-only', state.base_sha, '--']).split(/\r?\n/).filter(Boolean);
+    const untracked = git(['ls-files', '--others', '--exclude-standard']).split(/\r?\n/).filter(Boolean);
+    const files = [...new Set([...tracked, ...untracked].map(x => x.replaceAll('\\', '/')))];
+    const numstat = git(['diff', '--numstat', state.base_sha, '--']).split(/\r?\n/).filter(Boolean).reduce((sum, line) => { const [a, d] = line.split('\t'); return { added: sum.added + (Number(a) || 0), deleted: sum.deleted + (Number(d) || 0) }; }, { added: 0, deleted: 0 });
+    for (const file of untracked.slice(0, 200)) { try { const stat = fs.statSync(path.join(record.worktree, file)); if (stat.size <= 2_000_000) { const text = fs.readFileSync(path.join(record.worktree, file), 'utf8'); numstat.added += text.split(/\r?\n/).length; } } catch {} }
+    const planned = Array.isArray(state.change_budget?.planned_files) ? state.change_budget.planned_files.map(x => String(x).replaceAll('\\', '/').replace(/^\.\//, '')) : [];
+    const outside = planned.length ? files.filter(file => !planned.includes(file)) : [];
+    return { files, added: numstat.added, deleted: numstat.deleted, outside, inspected: true };
+  } catch (e) { return { files: [], added: 0, deleted: 0, outside: [], inspected: false, error: e.message }; }
+}
+
+export function qualityReport(store, record, state = null, options = {}) {
   const current = state ?? (() => { try { return store.state(record.id); } catch { return null; } })();
   const structural = [], delivery = [], evidence = [], entries = [];
   if (!current || typeof current !== 'object') structural.push('estado.json ausente ou inválido');
@@ -88,6 +105,16 @@ export function qualityReport(store, record, state = null) {
     if (Number.isFinite(Number(budget.estimated_added_lines)) && Number(budget.estimated_added_lines) > Number(guard.max_planned_added_lines || Infinity)) structural.push('linhas adicionadas acima do scope_guard');
     if (Number.isFinite(Number(budget.estimated_deleted_lines)) && Number(budget.estimated_deleted_lines) > Number(guard.max_planned_deleted_lines || Infinity)) structural.push('linhas removidas acima do scope_guard');
   }
+  if (options.checkDiff) {
+    const diff = actualDiff(store, record, current);
+    if (!diff.inspected) structural.push(`diff real não pôde ser conferido${diff.error ? `: ${diff.error}` : ''}`);
+    else {
+      if (diff.outside.length) structural.push(`arquivos fora do plano: ${diff.outside.slice(0, 5).join(', ')}`);
+      if (guard && diff.files.length > Number(guard.max_planned_files || Infinity)) structural.push(`diff real com ${diff.files.length} arquivos; limite ${guard.max_planned_files}`);
+      if (guard && diff.added > Number(guard.max_planned_added_lines || Infinity)) structural.push(`diff real com ${diff.added} linhas adicionadas; limite ${guard.max_planned_added_lines}`);
+      if (guard && diff.deleted > Number(guard.max_planned_deleted_lines || Infinity)) structural.push(`diff real com ${diff.deleted} linhas removidas; limite ${guard.max_planned_deleted_lines}`);
+    }
+  }
   const document = current?.document;
   if (current?.stage === 'concluido' || current?.stage === 'entregue') {
     if (!document?.path) delivery.push('documento final não registrado');
@@ -98,7 +125,38 @@ export function qualityReport(store, record, state = null) {
   }
   const commitReady = !structural.length && !evidence.length;
   const deliveryReady = commitReady && !delivery.length;
-  return { commitReady, deliveryReady, structural, evidence, delivery, entries };
+  const metrics = metricsSnapshot(store, record, current, { commitReady, deliveryReady });
+  return { commitReady, deliveryReady, structural, evidence, delivery, entries, metrics };
+}
+
+export function riskReport(record, state, quality, runtime = null) {
+  const reasons = [], metrics = quality?.metrics || {}, stage = state?.stage || 'cadastrado';
+  let score = 0;
+  if (quality?.structural?.length) { score += 4; reasons.push(`${quality.structural.length} pendência(s) estrutural(is)`); }
+  if (quality?.evidence?.length) { score += 3; reasons.push(`${quality.evidence.length} evidência(s) inconsistente(s)`); }
+  if (quality?.delivery?.length) { score += 4; reasons.push(`${quality.delivery.length} bloqueio(s) de entrega`); }
+  if (stage === 'bloqueado' || runtime?.phase === 'error') { score += 4; reasons.push('ticket bloqueado ou com erro de sessão'); }
+  if (runtime?.phase === 'running' && runtime?.heartbeat && Date.now() - Date.parse(runtime.heartbeat) > 25_000) { score += 2; reasons.push('sessão sem heartbeat recente'); }
+  if (Number(metrics.tests_not_executed) > 0) { score += 3; reasons.push(`${metrics.tests_not_executed} teste(s) não executado(s)`); }
+  if (Number(metrics.scope_expansions) > 0) { score += 2; reasons.push(`${metrics.scope_expansions} expansão(ões) de escopo`); }
+  if (Number(metrics.escaped_findings) > 0) { score += 2; reasons.push(`${metrics.escaped_findings} achado(s) identificado(s) em revisão`); }
+  if (Number(metrics.tokens?.estimated_total) > 150_000) { score += 1; reasons.push('sessão com contexto estimado alto'); }
+  const level = score >= 7 ? 'red' : score >= 3 ? 'yellow' : 'green';
+  return { level, label: level === 'red' ? 'Alto risco' : level === 'yellow' ? 'Atenção' : 'Controlado', score, reasons: reasons.slice(0, 8) };
+}
+
+export function preflightReport(store, record) {
+  const blocking = [], warnings = [];
+  if (!record.repository || !fs.existsSync(path.join(record.repository, '.git'))) blocking.push('repositório Git não encontrado');
+  if (!['claude', 'codex'].includes(record.agent)) blocking.push('agente inválido');
+  const executable = record.agent === 'codex' ? store.config.codex : store.config.claude;
+  if (!executable || !fs.existsSync(executable)) blocking.push(`${record.agent} não localizado`);
+  try { const attachments = store.attachmentInfo(record); if (attachments.missing.length) blocking.push(`anexos ausentes: ${attachments.missing.join(', ')}`); } catch (e) { blocking.push(e.message); }
+  if (record.prepared && (!record.worktree || !inside(store.config.new_worktrees_root, record.worktree) || !fs.existsSync(record.worktree))) blocking.push('worktree ausente ou fora do diretório gerenciado');
+  try { const state = store.state(record.id); if (!state || !fs.existsSync(path.join(store.stateDir(record.id), 'test-matrix.json')) || !fs.existsSync(path.join(store.stateDir(record.id), 'evidence-manifest.json'))) blocking.push('arquivos de controle de qualidade ausentes'); } catch (e) { blocking.push(e.message); }
+  if (!store.config.repository) blocking.push('perfil sem repositório padrão');
+  if (!store.config.ai_memory_url) warnings.push('AI Memory usa o endereço local padrão; falhas serão preservadas no outbox.');
+  return { ok: blocking.length === 0, blocking, warnings, checked_at: now() };
 }
 
 function ensureQualityFiles(store, record) {
@@ -301,11 +359,12 @@ export class Store {
     const running = !!runtime && (alive(runtime.pid) || alive(runtime.childPid)) && ['starting', 'running'].includes(runtime.phase);
     const session = running ? (Date.now() - Date.parse(runtime.heartbeat || runtime.startedAt) > 25_000 ? 'uncertain' : 'running') : runtime ? 'stopped' : 'none';
     const rawStage = state?.stage === 'entregue' ? 'concluido' : state?.stage;
-    const quality = stateError ? { commitReady: false, deliveryReady: false, structural: [stateError], evidence: [], delivery: [], entries: [] } : qualityReport(this, ticket, state);
+    const quality = stateError ? { commitReady: false, deliveryReady: false, structural: [stateError], evidence: [], delivery: [], entries: [], metrics: null } : qualityReport(this, ticket, state);
     const stage = stateError ? 'bloqueado' : (['concluido'].includes(rawStage) && !quality.deliveryReady) ? 'bloqueado' : rawStage in STAGES ? rawStage : ticket.prepared ? 'analise' : 'cadastrado';
+    const risk = riskReport(ticket, state, quality, runtime);
     let attachments = { names: [], missing: [], exists: false };
     try { const info = this.attachmentInfo(ticket); attachments = { names: info.names, missing: info.missing, exists: info.exists }; } catch (e) { attachments.error = e.message; }
-    return { id: ticket.id, ticket: ticket.ticket, sprint: ticket.sprint, release: ticket.release, title: ticket.title, delivery: ticket.delivery, agent: ticket.agent, repositoryId: ticket.repositoryId, prepared: !!ticket.prepared, branch: ticket.branch, worktree: ticket.worktree, updatedAt: ticket.updatedAt, stage, stageLabel: STAGES[stage], stateError, session, runtime: runtime ? { phase: runtime.phase, error: runtime.error, heartbeat: runtime.heartbeat } : null, quality: { commitReady: quality.commitReady, deliveryReady: quality.deliveryReady, issues: [...quality.structural, ...quality.evidence, ...quality.delivery].slice(0, 12), counts: { structural: quality.structural.length, evidence: quality.evidence.length, delivery: quality.delivery.length } }, attachments: { missing: attachments.missing, count: attachments.names.length, exists: attachments.exists, error: attachments.error } };
+    return { id: ticket.id, ticket: ticket.ticket, sprint: ticket.sprint, release: ticket.release, title: ticket.title, delivery: ticket.delivery, agent: ticket.agent, repositoryId: ticket.repositoryId, prepared: !!ticket.prepared, branch: ticket.branch, worktree: ticket.worktree, updatedAt: ticket.updatedAt, stage, stageLabel: STAGES[stage], stateError, session, runtime: runtime ? { phase: runtime.phase, error: runtime.error, heartbeat: runtime.heartbeat } : null, risk, quality: { commitReady: quality.commitReady, deliveryReady: quality.deliveryReady, issues: [...quality.structural, ...quality.evidence, ...quality.delivery].slice(0, 12), counts: { structural: quality.structural.length, evidence: quality.evidence.length, delivery: quality.delivery.length } }, metrics: quality.metrics, attachments: { missing: attachments.missing, count: attachments.names.length, exists: attachments.exists, error: attachments.error } };
   }
   view(id) {
     const ticket = this.get(id); let state, stateError = null;
@@ -313,10 +372,12 @@ export class Store {
     const runtime = this.runtime(id), running = !!runtime && (alive(runtime.pid) || alive(runtime.childPid)) && ['starting', 'running'].includes(runtime.phase);
     const session = running ? (Date.now() - Date.parse(runtime.heartbeat || runtime.startedAt) > 25_000 ? 'uncertain' : 'running') : runtime ? 'stopped' : 'none';
     const rawStage = state?.stage === 'entregue' ? 'concluido' : state?.stage;
-    const quality = stateError ? { commitReady: false, deliveryReady: false, structural: [stateError], evidence: [], delivery: [], entries: [] } : qualityReport(this, ticket, state);
+    const checkDiff = ['revisao', 'entrega', 'aguardando_validacao_manual', 'concluido'].includes(state?.stage);
+    const quality = stateError ? { commitReady: false, deliveryReady: false, structural: [stateError], evidence: [], delivery: [], entries: [], metrics: null } : qualityReport(this, ticket, state, { checkDiff });
     const stage = stateError ? 'bloqueado' : (['concluido'].includes(rawStage) && !quality.deliveryReady) ? 'bloqueado' : rawStage in STAGES ? rawStage : ticket.prepared ? 'analise' : 'cadastrado';
+    const risk = riskReport(ticket, state, quality, runtime);
     let attachments; try { attachments = this.attachmentInfo(ticket); } catch (e) { attachments = { names: [], missing: [], error: e.message }; }
-    return { ...ticket, stage, stageLabel: STAGES[stage], state: state ?? null, stateError, session, runtime, approval: this.currentApproval(id), quality, attachments, events: this.events(id) };
+    return { ...ticket, stage, stageLabel: STAGES[stage], state: state ?? null, stateError, session, runtime, approval: this.currentApproval(id), risk, quality, metrics: quality.metrics, attachments, events: this.events(id) };
   }
   list(options = {}) {
     const stageFilter = options.stage || 'active', query = String(options.q || '').trim().toLowerCase(), repository = String(options.repository || '').toLowerCase(), agent = String(options.agent || '').toLowerCase(), limit = Math.min(Math.max(Number(options.limit) || 250, 1), 500);
@@ -332,7 +393,8 @@ export class Store {
   }
   stats() {
     const all = this.list({ stage: 'all', limit: 500 });
-    return { total: all.length, active: all.filter(x => x.stage !== 'concluido').length, running: all.filter(x => ['running', 'uncertain'].includes(x.session)).length, attention: all.filter(x => /aguardando|bloqueado/.test(x.stage) || x.runtime?.phase === 'error' || x.stateError).length, done: all.filter(x => x.stage === 'concluido').length };
+    const tokens = all.reduce((sum, x) => sum + Number(x.metrics?.tokens?.estimated_total || 0), 0);
+    return { total: all.length, active: all.filter(x => x.stage !== 'concluido').length, running: all.filter(x => ['running', 'uncertain'].includes(x.session)).length, attention: all.filter(x => /aguardando|bloqueado/.test(x.stage) || x.runtime?.phase === 'error' || x.stateError).length, done: all.filter(x => x.stage === 'concluido').length, risks: { red: all.filter(x => x.risk?.level === 'red').length, yellow: all.filter(x => x.risk?.level === 'yellow').length, green: all.filter(x => x.risk?.level === 'green').length }, estimated_tokens: tokens, tests_not_executed: all.reduce((sum, x) => sum + Number(x.metrics?.tests_not_executed || 0), 0), blocked_seconds: all.reduce((sum, x) => sum + Number(x.metrics?.blocked_seconds || 0), 0) };
   }
   reserve(id) {
     this.get(id);
@@ -443,6 +505,7 @@ export function writeSessionFiles(store, record) {
     `Antes de implementar, salve o plano minimo em ${path.join(store.stateDir(record.id), 'escopo.md')}: comportamento atual que ja funciona, causa confirmada, menor patch, arquivos/metodos, estimativa de linhas, testes diretamente afetados, limites negativos e uma secao Fora do escopo. Registre tambem change_budget no estado. Preserve tudo que ja satisfaz o aceite. Registre stage=aguardando_aprovacao e peca ao usuario a frase exata APROVAR ${record.id}. O hook registra essa decisao vinculada ao SHA-256 do plano. Nao aprove por memoria ou por conta propria.\n` +
     `Regra anti-delirio: nao refatore legado, nao crie mecanismo novo e nao corrija achado preexistente so porque parece melhor. Se precisar tocar arquivo/camada/tabela/projeto fora do plano, ou ultrapassar a estimativa/limite do scope_guard, PARE antes de editar, explique a expansao e solicite nova aprovacao. Nao use code review para autoautorizar expansao.\n` +
     `A Central criou ${path.join(store.stateDir(record.id), 'test-matrix.json')} e ${path.join(store.stateDir(record.id), 'evidence-manifest.json')}. Mantenha ambos sincronizados: uma entrada por criterio/variante e uma referencia para cada log, consulta, screenshot ou artefato realmente existente. Caminho inexistente, texto generico ou evidencia apenas presumida nao conta.\n` +
+    `A Central registra automaticamente eventos, estimativa de tokens por fase, tempo bloqueado, chamadas de ferramenta, expansoes de escopo e encerramento da sessao em metrics.json. Nao invente numeros; quando houver uso/token informado pelo agente, registre a origem. O encerramento gera um aprendizado sanitizado para o AI Memory; nunca inclua credenciais, dumps ou dados de cliente.\n` +
     `Faca primeiro uma prova de suficiencia: escreva qual regra existente ja atende, qual linha/condicao causa o defeito e por que a correcao minima resolve. Uma rodada de correcao e o padrao; nova rodada exige decisao do usuario.\n` +
      `Antes de aprovar o plano, faca um mapa de variantes e rotinas paralelas: pesquise todas as entradas que chegam ao mesmo comportamento, implementacoes equivalentes em outros forms/DAOs/projetos, chamadas de banco/migrations e caminhos de inclusao, alteracao, exclusao e repeticao. Para schema/migration, compare explicitamente os estados FK inexistente, existente confiavel, NOCHECK/desabilitada, indices/constraints conflitantes, dados orfaos, reaplicacao e rollback. Registre uma matriz por variante com esperado, obtido e evidencia; cada caso relevante deve ser executado ou marcado BLOQUEADO/NAO EXECUTADO, nunca presumido por um unico caminho feliz. Para telas e eventos com estado, teste tambem sequencias de transicao (0->1->2, 2->1, desselecionar, reordenar, cancelar, confirmar e reabrir), diferenciando preferencia persistente de estado derivado da operacao; nunca altere ou grave uma preferencia apenas para limitar uma operacao momentanea.\n` +
      `Revisao obrigatoria antes de declarar concluido: releia o escopo e cada criterio de aceite, confira o diff completo contra a base (git diff --check, arquivos alterados, linhas geradas e arquivos fora do plano), procure regressao nos caminhos sem alteracao, valide cenarios positivo/negativo, limites e transicoes de estado, confirme que build/testes realmente executaram e registre review com verdict, evidencias, achados confirmados e pendencias. Nao trate compilacao parcial, simulacao, estado final isolado ou inspecao de uma unica funcao como revisao suficiente. Se houver qualquer duvida, resultado nao executado ou arquivo incidental, pare em revisao/validacao_manual e informe o usuario; nao marque concluido para encerrar a conversa.\n` +

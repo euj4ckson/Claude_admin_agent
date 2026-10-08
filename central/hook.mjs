@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Store, readJson, atomicJson, now } from './core.mjs';
 import { approvalPrompt, preTool, criticalStage, releaseExecution } from './policy.mjs';
+import { recordHookMetric, appendMemorySync } from './metrics.mjs';
+import { learningFromTicket, syncLearning, flushMemoryOutbox } from './memory.mjs';
 
 let input = {};
 try {
@@ -49,7 +51,14 @@ try {
     releaseExecution(store, runtime);
     store.event(id, 'sessao', 'Conversa encerrada. Trabalho e histórico foram preservados.');
   }
-  atomicJson(store.file(id, 'hook-status.json'), { event, at: now(), sessionId: input.session_id });
+  const metrics = recordHookMetric(store, ticket, input);
+  if (event === 'SessionEnd') {
+    try {
+      const view = store.view(id); await flushMemoryOutbox(config); const result = await syncLearning(config, learningFromTicket(ticket, view.state, view.quality, view.metrics));
+      appendMemorySync(store, id, result); store.event(id, 'memory', `Aprendizado ${result.remote === 'synced' ? 'sincronizado' : 'enfileirado'} para o AI Memory.`);
+    } catch (error) { store.event(id, 'memory', `Falha ao sincronizar aprendizado; preservado localmente: ${error.message}`); }
+  }
+  atomicJson(store.file(id, 'hook-status.json'), { event, at: now(), sessionId: input.session_id, metrics: metrics?.totals || null });
   process.stdout.write(JSON.stringify(output));
 } catch (e) {
   if (input.hook_event_name === 'PreToolUse') {

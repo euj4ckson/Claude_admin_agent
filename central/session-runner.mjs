@@ -4,6 +4,8 @@ import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, readJson, atomicJson, now, initialPrompt, verifyWorktree } from './core.mjs';
+import { recordHookMetric, appendMemorySync } from './metrics.mjs';
+import { learningFromTicket, syncLearning, flushMemoryOutbox } from './memory.mjs';
 
 const [dataRoot, id, runId] = process.argv.slice(2);
 let store, runtime, child, heartbeat;
@@ -46,6 +48,7 @@ try {
   } else if (ticket.agent !== 'codex') args.push('--session-id', ticket.sessionId, initialPrompt(store, ticket));
   console.log(`\n${ticket.id} — Central de Tickets\n${ticket.worktree}\nEntrega: ${ticket.delivery === 'no_commit' ? 'sem commit' : 'commit local'}, sem push.\n`);
   child = spawn(executable, args, { cwd: ticket.worktree, env, stdio: 'inherit', shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable) });
+  if (ticket.agent === 'codex') recordHookMetric(store, ticket, { hook_event_name: 'SessionStart', session_id: ticket.sessionId });
   runtime.childPid = child.pid;
   atomicJson(store.file(id, 'runtime.json'), runtime);
   heartbeat = setInterval(() => { try { atomicJson(store.file(id, 'runtime.json'), { ...runtime, heartbeat: now() }); } catch {} }, 3000);
@@ -53,6 +56,10 @@ try {
   clearInterval(heartbeat);
   atomicJson(store.file(id, 'runtime.json'), { ...runtime, phase: 'stopped', exitCode: code, endedAt: now(), heartbeat: now() });
   store.event(id, 'sessao', `Processo ${ticket.agent === 'codex' ? 'Codex' : 'Claude'} encerrado (${code ?? 'interrompido'}). A Central não marcou o ticket como concluído.`);
+  if (ticket.agent === 'codex') {
+    recordHookMetric(store, ticket, { hook_event_name: 'SessionEnd', session_id: ticket.sessionId });
+    try { const view = store.view(id); await flushMemoryOutbox(config); const result = await syncLearning(config, learningFromTicket(ticket, view.state, view.quality, view.metrics)); appendMemorySync(store, id, result); } catch (error) { store.event(id, 'memory', `Falha ao sincronizar aprendizado do Codex; preservado localmente: ${error.message}`); }
+  }
 } catch (e) {
   clearInterval(heartbeat); console.error(`\nNão foi possível abrir a conversa: ${e.message}`);
   if (store && runtime) { atomicJson(store.file(id, 'runtime.json'), { ...runtime, phase: 'error', error: e.message, endedAt: now() }); store.event(id, 'erro', e.message); }

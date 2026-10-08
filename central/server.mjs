@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { Store, AppError, defaultConfig, atomicJson, readJson, ticketId, attachmentName, prepare, verifyWorktree, writeSessionFiles, runGit, inside, redact, now, ticketConfig } from './core.mjs';
+import { Store, AppError, defaultConfig, atomicJson, readJson, ticketId, attachmentName, prepare, verifyWorktree, writeSessionFiles, runGit, inside, redact, now, ticketConfig, preflightReport } from './core.mjs';
 import { launchTerminal, focusTerminal, openLocal } from './desktop.mjs';
 import { attachmentLimits, downloadAzureAttachment, fetchWorkItem, readAzurePat, saveAzurePat, azureStatus } from './azure.mjs';
+import { learningFromTicket, syncLearning, flushMemoryOutbox, memoryOutbox } from './memory.mjs';
+import { appendMemorySync } from './metrics.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(here, 'public');
@@ -102,7 +104,7 @@ export function createServer(config, adapters = {}) {
         };
         let memory = false;
         if (!adapters.skipMemory) { try { const r = await fetch('http://127.0.0.1:49374/admin/status', { signal: AbortSignal.timeout(1000) }); memory = r.ok; } catch {} }
-        return send(res, 200, { repository: config.repository, repositories: listRepositories(config), agents: [{ id: 'claude', name: 'Claude Code', available: !!config.claude && fs.existsSync(config.claude) }, { id: 'codex', name: 'Codex CLI', available: !!config.codex && fs.existsSync(config.codex) }], preferences: readJson(path.join(store.root, 'preferences.json'), {}), checks, memory, executionOwner: readJson(path.join(store.root, 'execution.lock'))?.id ?? null, demo: !!config.demo, azure: azureStatus(config, store.root) });
+        return send(res, 200, { repository: config.repository, repositories: listRepositories(config), agents: [{ id: 'claude', name: 'Claude Code', available: !!config.claude && fs.existsSync(config.claude) }, { id: 'codex', name: 'Codex CLI', available: !!config.codex && fs.existsSync(config.codex) }], preferences: readJson(path.join(store.root, 'preferences.json'), {}), checks, memory, aiMemory: { reachable: memory, outbox: memoryOutbox(config), pending: fs.existsSync(memoryOutbox(config)) }, executionOwner: readJson(path.join(store.root, 'execution.lock'))?.id ?? null, demo: !!config.demo, azure: azureStatus(config, store.root) });
       }
       if (req.method === 'GET' && url.pathname === '/api/azure/status') return send(res, 200, azureStatus(config, store.root));
       if (req.method === 'POST' && url.pathname === '/api/azure/configure') {
@@ -149,11 +151,15 @@ export function createServer(config, adapters = {}) {
         return send(res, 201, store.create({ ...input, release, repository: repository.path, repositoryId: repository.id, repository_standard: repository.standard, integration_branch: input.integration_branch || repository.standard?.integration || null, agent }));
       }
       if (req.method === 'GET' && url.pathname === '/api/stats') return send(res, 200, store.stats());
+      if (req.method === 'POST' && url.pathname === '/api/memory-sync') return send(res, 200, await flushMemoryOutbox(config));
       const match = /^\/api\/tickets\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname);
       if (match) {
         const id = ticketId(decodeURIComponent(match[1])), action = match[2];
         let record = store.get(id);
         if (req.method === 'GET' && !action) return send(res, 200, store.view(id));
+        if (req.method === 'GET' && action === 'preflight') return send(res, 200, preflightReport(store, record));
+        if (req.method === 'GET' && action === 'metrics') { const view = store.view(id); return send(res, 200, { ticket: id, risk: view.risk, quality: view.quality, metrics: view.metrics }); }
+        if (req.method === 'POST' && action === 'memory-sync') { const view = store.view(id), result = await syncLearning(config, learningFromTicket(record, view.state, view.quality, view.metrics)); appendMemorySync(store, id, result); store.event(id, 'memory', `Aprendizado ${result.remote === 'synced' ? 'sincronizado' : 'enfileirado'} para o AI Memory.`); return send(res, result.remote === 'synced' ? 200 : 202, result); }
         if (req.method === 'POST' && action === 'attachments') {
           const files = await multipartFiles(req);
           const dir = path.join(config.references_root, id.toLowerCase());
@@ -197,6 +203,8 @@ export function createServer(config, adapters = {}) {
           const runtime = store.reserve(id);
           try {
             record = await prepare(store, record, git);
+            const preflight = preflightReport(store, record);
+            if (!preflight.ok) throw new AppError(`Pré-flight bloqueado: ${preflight.blocking.join('; ')}`, 409);
             writeSessionFiles(store, record);
             const documentDir = path.join(config.documents_root, id.toLowerCase());
             if (!inside(config.documents_root, documentDir)) throw new AppError('Pasta de documentos inválida.');
