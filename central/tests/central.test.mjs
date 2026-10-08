@@ -9,6 +9,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { Store, validateTicket, atomicJson, readJson, inside, prepare, verifyWorktree, writeSessionFiles } from '../core.mjs';
 import { approvalPrompt, preTool, acquireExecution, releaseExecution } from '../policy.mjs';
 import { createServer } from '../server.mjs';
+import { htmlToText, parseAzureReference, safeRemoteName } from '../azure.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const input = (id = 'GER5800') => ({ticket:id,sprint:'165',release:'release/106.4.3',title:'Teste isolado',scope:'Escopo de teste fictício para validar os controles locais.',delivery:'no_commit',attachments:[]});
@@ -217,4 +218,26 @@ test('summary endpoints, statistics, SSE updates and static ETag are available',
   assert.equal((await fetch(`${origin}/`,{headers:{...headers,'If-None-Match':etag}})).status,304);
   const sse = await fetch(`${origin}/api/stream`,{headers}); assert.equal(sse.status,200); assert.match(sse.headers.get('content-type'),/text\/event-stream/); await sse.body.cancel();
   store.event(ticket.id,'teste','Atualização SSE');
+});
+
+test('Azure reference parsing and safe description conversion preserve the source boundary', () => {
+  const ref = parseAzureReference('https://dev.azure.com/sistemasunion/SSUnion/_boards/board/t/Union%20Sistemas/Backlog%20items?workitem=1792');
+  assert.equal(ref.id, 1792); assert.match(ref.url, /_workitems\/edit\/1792$/);
+  assert.throws(() => parseAzureReference('https://evil.example/SSUnion/_workitems/edit/1792'));
+  assert.equal(htmlToText('<p>Regra <strong>principal</strong></p><ul><li>um</li><li>dois</li></ul>'), 'Regra principal\n- um\n- dois');
+  assert.equal(safeRemoteName('..\\cliente:dump.bak'), 'cliente_dump.bak');
+});
+
+test('Azure preview/import uses read-only adapter, downloads selected attachments and never starts an agent', async t => {
+  const { config } = fixture(t), fakeFetch = async url => {
+    if (String(url).includes('/_apis/wit/attachments/')) return new Response(Buffer.from('anexo de teste'));
+    return new Response(JSON.stringify({ id: 1792, fields: { 'System.Title': 'GER5999 Ajustar rotina', 'System.Description': '<p>Escopo importado com critérios de aceite suficientes.</p>', 'System.State': 'New', 'System.IterationPath': 'Union\\Sprint 166', 'Custom.Sprint': 166, 'System.Tags': 'hotfix' }, relations: [{ rel: 'AttachedFile', url: 'https://dev.azure.com/sistemasunion/SSUnion/_apis/wit/attachments/abc', attributes: { name: 'evidencia.txt', resourceSize: 14 } }] }));
+  };
+  const app = createServer(config, { skipMemory: true, azureFetch: fakeFetch, azurePat: async () => 'p'.repeat(30) });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => app.server.close(resolve)));
+  const origin = `http://127.0.0.1:${app.server.address().port}`, boot = await fetch(`${origin}/bootstrap?token=${app.token}`, { redirect: 'manual' }), cookie = boot.headers.get('set-cookie').split(';')[0], headers = { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json', 'X-Central-Request': '1' };
+  const preview = await (await fetch(`${origin}/api/azure/preview`, { method: 'POST', headers, body: JSON.stringify({ reference: '1792' }) })).json();
+  assert.equal(preview.suggested.ticket, 'GER5999'); assert.equal(preview.suggested.sprint, '166'); assert.equal(preview.attachments[0].name, 'evidencia.txt');
+  const importedResponse = await fetch(`${origin}/api/azure/import`, { method: 'POST', headers, body: JSON.stringify({ reference: '1792', ticket: 'GER5999', sprint: '166', title: preview.suggested.title, scope: preview.suggested.scope, repository: path.basename(config.repository), release: 'release/106.4.3', delivery: 'no_commit', branchType: 'hotfix', agent: 'claude', attachments: ['evidencia.txt'], downloadAttachments: true }) });
+  assert.equal(importedResponse.status, 201); const imported = await importedResponse.json(); assert.equal(imported.downloaded, 1); assert.equal(imported.azure_source.id, 1792); assert.deepEqual(imported.attachments.missing, []); assert.equal(fs.readFileSync(path.join(config.references_root, 'ger5999', 'evidencia.txt'), 'utf8'), 'anexo de teste');
 });

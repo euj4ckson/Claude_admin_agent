@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Store, AppError, defaultConfig, atomicJson, readJson, ticketId, attachmentName, prepare, verifyWorktree, writeSessionFiles, runGit, inside, redact, now, ticketConfig } from './core.mjs';
 import { launchTerminal, focusTerminal, openLocal } from './desktop.mjs';
+import { attachmentLimits, downloadAzureAttachment, fetchWorkItem, readAzurePat, saveAzurePat, azureStatus } from './azure.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(here, 'public');
@@ -54,7 +55,7 @@ async function multipartFiles(req) {
 export function createServer(config, adapters = {}) {
   const store = new Store(config);
   const token = crypto.randomBytes(32).toString('hex');
-  const launch = adapters.launch || launchTerminal, focus = adapters.focus || focusTerminal, open = adapters.open || openLocal;
+  const launch = adapters.launch || launchTerminal, focus = adapters.focus || focusTerminal, open = adapters.open || openLocal, azureFetch = adapters.azureFetch || globalThis.fetch, azurePat = adapters.azurePat || (() => readAzurePat(store.root));
   const git = adapters.git || runGit;
   const streams = new Set();
   const notifyStreams = payload => {
@@ -101,7 +102,42 @@ export function createServer(config, adapters = {}) {
         };
         let memory = false;
         if (!adapters.skipMemory) { try { const r = await fetch('http://127.0.0.1:49374/admin/status', { signal: AbortSignal.timeout(1000) }); memory = r.ok; } catch {} }
-        return send(res, 200, { repository: config.repository, repositories: listRepositories(config), agents: [{ id: 'claude', name: 'Claude Code', available: !!config.claude && fs.existsSync(config.claude) }, { id: 'codex', name: 'Codex CLI', available: !!config.codex && fs.existsSync(config.codex) }], preferences: readJson(path.join(store.root, 'preferences.json'), {}), checks, memory, executionOwner: readJson(path.join(store.root, 'execution.lock'))?.id ?? null, demo: !!config.demo });
+        return send(res, 200, { repository: config.repository, repositories: listRepositories(config), agents: [{ id: 'claude', name: 'Claude Code', available: !!config.claude && fs.existsSync(config.claude) }, { id: 'codex', name: 'Codex CLI', available: !!config.codex && fs.existsSync(config.codex) }], preferences: readJson(path.join(store.root, 'preferences.json'), {}), checks, memory, executionOwner: readJson(path.join(store.root, 'execution.lock'))?.id ?? null, demo: !!config.demo, azure: azureStatus(config, store.root) });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/azure/status') return send(res, 200, azureStatus(config, store.root));
+      if (req.method === 'POST' && url.pathname === '/api/azure/configure') {
+        const input = await jsonBody(req); await saveAzurePat(store.root, input.pat); return send(res, 200, { configured: true, message: 'Acesso Azure salvo com proteção do Windows (somente leitura).' });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/azure/preview') {
+        const input = await jsonBody(req), pat = await azurePat();
+        return send(res, 200, await fetchWorkItem(input.reference, config, { pat, fetchImpl: azureFetch }));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/azure/import') {
+        const input = await jsonBody(req), pat = await azurePat(), preview = await fetchWorkItem(input.reference, config, { pat, fetchImpl: azureFetch });
+        const suggested = preview.suggested;
+        const ticket = String(input.ticket || suggested.ticket || '').trim();
+        const sprint = String(input.sprint || suggested.sprint || '').trim();
+        if (!ticket || !sprint) throw new AppError('Informe o código do ticket e a sprint antes de importar.');
+        const selectedNames = Array.isArray(input.attachments) ? new Set(input.attachments.map(String)) : new Set(preview.attachments.map(x => x.name));
+        const selected = input.downloadAttachments === false ? [] : preview.attachments.filter(x => selectedNames.has(x.name));
+        const repository = resolveRepository(config, input.repository || suggested.repositoryId || path.basename(config.repository));
+        const agent = String(input.agent || 'claude').toLowerCase();
+        if (!['claude', 'codex'].includes(agent)) throw new AppError('Escolha Claude Code ou Codex CLI.');
+        if (agent === 'claude' && !config.claude) throw new AppError('Claude Code não está instalado nesta máquina.', 409);
+        if (agent === 'codex' && !config.codex) throw new AppError('Codex CLI não está instalado nesta máquina.', 409);
+        const record = store.create({ ticket, sprint, release: input.release || repository.standard?.base || 'main', title: input.title || suggested.title, scope: input.scope || suggested.scope, delivery: input.delivery || 'local_commit_only', branchType: input.branchType || suggested.branchType, attachments: selected.map(x => x.name), repository: repository.path, repositoryId: repository.id, repository_standard: repository.standard, integration_branch: repository.standard?.integration || null, agent, azure_source: preview.source });
+        const warnings = [...preview.warnings]; let total = 0, downloaded = 0;
+        const dir = path.join(config.references_root, record.id.toLowerCase()); fs.mkdirSync(dir, { recursive: true });
+        for (const attachment of selected) {
+          try {
+            if (total >= attachmentLimits().maxTotalBytes) throw new AppError('O limite total de 200 MB de anexos foi atingido.');
+            const content = await downloadAzureAttachment(attachment, pat, { fetchImpl: azureFetch }); total += content.length;
+            const target = path.join(dir, attachment.name); if (!inside(config.references_root, target)) throw new AppError('Anexo fora da pasta permitida.');
+            fs.writeFileSync(target, content, { flag: 'wx', mode: 0o600 }); downloaded++;
+          } catch (e) { warnings.push(`${attachment.name}: ${e.message}`); }
+        }
+        store.event(record.id, 'azure', `Importado do Azure work item ${preview.source.id}; ${downloaded}/${selected.length} anexo(s) baixado(s).`);
+        return send(res, warnings.length ? 207 : 201, { ...record, preview, downloaded, warnings, attachments: store.attachmentInfo(store.get(record.id)) });
       }
       if (url.pathname === '/api/tickets') {
         if (req.method === 'GET') return send(res, 200, store.list({ stage: url.searchParams.get('stage') || 'active', q: url.searchParams.get('q'), repository: url.searchParams.get('repository'), agent: url.searchParams.get('agent'), limit: url.searchParams.get('limit') }));

@@ -56,6 +56,12 @@ A interface fica disponível em `http://127.0.0.1:17861`. Abra-a pelo atalho par
 9. Só depois envie na conversa a frase exata `APROVAR TICKET`.
 10. Acompanhe testes, revisão, diff e documento final pela Central.
 
+### Importar diretamente do Azure DevOps
+
+Use **Importar do Azure** na tela inicial e cole o link do work item (ou somente o ID). Na primeira utilização, informe um PAT do Azure com permissão de leitura de Work Items; a Central o protege com o DPAPI do Windows e não o salva no repositório. A Central consulta o título, descrição, sprint, tags e anexos, mostra uma prévia e só cadastra depois da sua confirmação.
+
+O repositório, agente, tipo de branch, forma de entrega e anexos ficam revisáveis antes do cadastro. Os anexos selecionados são baixados para a pasta de referências do ticket. A importação não abre Claude/Codex e não publica branch, PR ou comentário no Azure. Se o Azure não informar o código do ticket ou a sprint em formato numérico, esses campos devem ser preenchidos manualmente na prévia.
+
 O filtro inicial mostra somente tickets em andamento. Tickets entregues podem ser consultados pelo filtro **Entregues**.
 
 ## Regras de branches

@@ -50,7 +50,8 @@ export function validateTicket(input) {
   attachments.forEach(attachmentName);
   const branchType = String(input.branchType || input.branch_type || 'feature').toLowerCase();
   if (!['feature', 'hotfix'].includes(branchType)) throw new AppError('Escolha branch feature ou hotfix.');
-  return { id, ticket: id, sprint, release, branch_type: branchType, scope, title, delivery: input.delivery, attachments: [...new Set(attachments)], repository: input.repository, repositoryId: input.repositoryId, repository_standard: input.repository_standard || null, integration_branch: input.integration_branch || null, agent: input.agent || 'claude' };
+  const azureSource = input.azure_source && typeof input.azure_source === 'object' ? { id: Number(input.azure_source.id) || null, url: String(input.azure_source.url || '').slice(0, 500), importedAt: String(input.azure_source.importedAt || now()) } : null;
+  return { id, ticket: id, sprint, release, branch_type: branchType, scope, title, delivery: input.delivery, attachments: [...new Set(attachments)], repository: input.repository, repositoryId: input.repositoryId, repository_standard: input.repository_standard || null, integration_branch: input.integration_branch || null, agent: input.agent || 'claude', azure_source: azureSource };
 }
 // Resolve existing ancestors too: a junction inside an allowed folder must not escape it.
 export function realTarget(value) {
@@ -93,7 +94,7 @@ export function defaultConfig(appRoot) {
   if (!profile) throw new AppError('O comando desenvolver-ticket não está instalado neste usuário.');
   const candidates = [path.join(home, 'AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe'), path.join(home, '.local/bin/claude.exe')];
   const codexCandidates = [path.join(home, 'AppData/Roaming/npm/codex.cmd'), path.join(home, 'AppData/Roaming/npm/codex.exe'), path.join(home, '.local/bin/codex.exe')];
-  return { ...profile, appRoot, skill, dataRoot: path.join(process.env.LOCALAPPDATA, 'CentralTicketsClaude'), claude: candidates.find(fs.existsSync) ?? null, codex: codexCandidates.find(fs.existsSync) ?? null, repositories_root: profile.repositories_root || path.dirname(profile.repository), state_base_root: profile.state_base_root || path.dirname(profile.state_root), worktrees_base_root: profile.worktrees_base_root || path.dirname(profile.new_worktrees_root), node: process.execPath };
+  return { ...profile, appRoot, skill, dataRoot: path.join(process.env.LOCALAPPDATA, 'CentralTicketsClaude'), claude: candidates.find(fs.existsSync) ?? null, codex: codexCandidates.find(fs.existsSync) ?? null, repositories_root: profile.repositories_root || path.dirname(profile.repository), state_base_root: profile.state_base_root || path.dirname(profile.state_root), worktrees_base_root: profile.worktrees_base_root || path.dirname(profile.new_worktrees_root), node: process.execPath, azure: profile.azure || { organization: 'sistemasunion', project: 'SSUnion' } };
 }
 
 export class Store {
