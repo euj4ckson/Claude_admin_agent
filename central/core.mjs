@@ -394,7 +394,8 @@ export class Store {
   stats() {
     const all = this.list({ stage: 'all', limit: 500 });
     const tokens = all.reduce((sum, x) => sum + Number(x.metrics?.tokens?.estimated_total || 0), 0);
-    return { total: all.length, active: all.filter(x => x.stage !== 'concluido').length, running: all.filter(x => ['running', 'uncertain'].includes(x.session)).length, attention: all.filter(x => /aguardando|bloqueado/.test(x.stage) || x.runtime?.phase === 'error' || x.stateError).length, done: all.filter(x => x.stage === 'concluido').length, risks: { red: all.filter(x => x.risk?.level === 'red').length, yellow: all.filter(x => x.risk?.level === 'yellow').length, green: all.filter(x => x.risk?.level === 'green').length }, estimated_tokens: tokens, tests_not_executed: all.reduce((sum, x) => sum + Number(x.metrics?.tests_not_executed || 0), 0), blocked_seconds: all.reduce((sum, x) => sum + Number(x.metrics?.blocked_seconds || 0), 0) };
+    const notExecuted = all.reduce((sum, x) => sum + Number(x.metrics?.tests_not_executed || 0), 0), testCount = all.reduce((sum, x) => sum + Number(x.metrics?.test_count || 0), 0);
+    return { total: all.length, active: all.filter(x => x.stage !== 'concluido').length, running: all.filter(x => ['running', 'uncertain'].includes(x.session)).length, attention: all.filter(x => /aguardando|bloqueado/.test(x.stage) || x.runtime?.phase === 'error' || x.stateError).length, done: all.filter(x => x.stage === 'concluido').length, risks: { red: all.filter(x => x.risk?.level === 'red').length, yellow: all.filter(x => x.risk?.level === 'yellow').length, green: all.filter(x => x.risk?.level === 'green').length }, estimated_tokens: tokens, tests_not_executed: notExecuted, tests_not_executed_rate: testCount ? notExecuted / testCount : 0, blocked_seconds: all.reduce((sum, x) => sum + Number(x.metrics?.blocked_seconds || 0), 0) };
   }
   reserve(id) {
     this.get(id);
