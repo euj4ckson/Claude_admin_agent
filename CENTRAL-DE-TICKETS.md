@@ -39,6 +39,7 @@ Não existe instalação de serviço, abertura de firewall ou inicialização au
 - Compilação/testes possuem reserva compartilhada entre sessões gerenciadas. O coordenador deve registrar `compilacao` ou `testes` antes de executar comandos síncronos. Se ocupado, informa o dono e aguarda pedido para continuar; **não há fila automática**. Outras sessões abertas fora da Central não participam dessa reserva.
 - Os hooks **não são um sandbox de sistema operacional**. Scripts indiretos, aliases e ferramentas não reconhecidas não podem ser classificados integralmente. Revise permissões do terminal, não use bypass de permissões e não trate os controles como barreira contra código malicioso.
 - Evidências de build/teste/revisão são registros do coordenador, não uma certificação automática de sucesso. A UI e o diff não substituem revisão e validação manual.
+- Em telas e eventos com estado, a revisão exige matriz de transições (por exemplo, 0→1→2 seleções, desseleção, reordenação, cancelar, confirmar e reabrir), separando preferência persistente de estado temporário da operação. O estado final isolado não prova que o fluxo está correto.
 - Dados do ticket e histórico são locais, mas o Claude continua enviando o contexto à Anthropic conforme a configuração/contrato da empresa. Não cole segredos. Proteja o perfil Windows; outro processo do mesmo usuário pode acessar os dados locais.
 
 ## Recuperação e manutenção

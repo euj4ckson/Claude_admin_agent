@@ -149,6 +149,10 @@ test('real isolated Git worktree preparation, reuse and interrupted preparation 
   assert.equal(git(config.repository,'branch','--show-current'),'release/106.4.3'); assert.equal(git(config.repository,'status','--porcelain'),'');
   assert.equal((await prepare(store,prepared)).worktree,prepared.worktree);
   writeSessionFiles(store,prepared); assert.equal(readJson(store.file(ticket.id,'session-settings.json')).hooks,undefined);
+  const guidance = fs.readFileSync(store.file(ticket.id,'session-context.txt'),'utf8');
+  assert.match(guidance,/sequencias de transicao/);
+  assert.match(guidance,/preferencia persistente/);
+  assert.match(guidance,/transicoes de estado/);
   store.save({...ticket,preparation:{branch:prepared.branch,worktree:prepared.worktree,base:mainHead}});
   assert.equal((await prepare(store,store.get(ticket.id))).prepared,true);
   await assert.rejects(verifyWorktree(store,{...prepared,branch:'wrong'}));
