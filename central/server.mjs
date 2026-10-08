@@ -56,8 +56,16 @@ export function createServer(config, adapters = {}) {
   const token = crypto.randomBytes(32).toString('hex');
   const launch = adapters.launch || launchTerminal, focus = adapters.focus || focusTerminal, open = adapters.open || openLocal;
   const git = adapters.git || runGit;
+  const streams = new Set();
+  const notifyStreams = payload => {
+    const data = JSON.stringify({ at: now(), ...payload });
+    for (const res of streams) { try { res.write(`event: tickets\ndata: ${data}\n\n`); } catch { streams.delete(res); } }
+  };
+  const unsubscribe = store.subscribe(notifyStreams);
+  let ticketWatcher = null;
+  try { ticketWatcher = fs.watch(path.join(store.root, 'tickets'), { recursive: true }, (_event, filename) => notifyStreams({ file: filename || null })); } catch {}
   const server = http.createServer(async (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Cache-Control', req.url?.startsWith('/api/') ? 'no-store' : 'no-cache');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -78,6 +86,14 @@ export function createServer(config, adapters = {}) {
       if (!cookies.includes(`central_session=${token}`)) throw new AppError('Abra a Central pelo atalho da área de trabalho para conectar esta janela.', 401);
       if (!['GET', 'POST'].includes(req.method)) throw new AppError('Método não permitido.', 405);
       if (req.method === 'POST' && (req.headers.origin !== origin || req.headers['x-central-request'] !== '1')) throw new AppError('Solicitação de outra página bloqueada.', 403);
+      if (req.method === 'GET' && url.pathname === '/api/stream') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+        res.write(`event: ready\ndata: ${JSON.stringify({ at: now() })}\n\n`);
+        streams.add(res);
+        const heartbeat = setInterval(() => { try { res.write(`event: heartbeat\ndata: ${JSON.stringify({ at: now() })}\n\n`); } catch {} }, 15000);
+        const cleanup = () => { clearInterval(heartbeat); streams.delete(res); };
+        req.on('close', cleanup); res.on('close', cleanup); return;
+      }
       if (req.method === 'GET' && url.pathname === '/api/profile') {
         const checks = {
           claude: !!config.claude && fs.existsSync(config.claude), git: fs.existsSync(config.git_executable),
@@ -88,7 +104,7 @@ export function createServer(config, adapters = {}) {
         return send(res, 200, { repository: config.repository, repositories: listRepositories(config), agents: [{ id: 'claude', name: 'Claude Code', available: !!config.claude && fs.existsSync(config.claude) }, { id: 'codex', name: 'Codex CLI', available: !!config.codex && fs.existsSync(config.codex) }], preferences: readJson(path.join(store.root, 'preferences.json'), {}), checks, memory, executionOwner: readJson(path.join(store.root, 'execution.lock'))?.id ?? null, demo: !!config.demo });
       }
       if (url.pathname === '/api/tickets') {
-        if (req.method === 'GET') return send(res, 200, store.list());
+        if (req.method === 'GET') return send(res, 200, store.list({ stage: url.searchParams.get('stage') || 'active', q: url.searchParams.get('q'), repository: url.searchParams.get('repository'), agent: url.searchParams.get('agent'), limit: url.searchParams.get('limit') }));
         const input = await jsonBody(req), repository = resolveRepository(config, input.repository || path.basename(config.repository)), agent = String(input.agent || 'claude').toLowerCase();
         if (!['claude', 'codex'].includes(agent)) throw new AppError('Escolha Claude Code ou Codex CLI.');
         if (agent === 'claude' && !config.claude) throw new AppError('Claude Code não está instalado nesta máquina.', 409);
@@ -96,6 +112,7 @@ export function createServer(config, adapters = {}) {
         const release = input.release || repository.standard?.base || 'main';
         return send(res, 201, store.create({ ...input, release, repository: repository.path, repositoryId: repository.id, repository_standard: repository.standard, integration_branch: input.integration_branch || repository.standard?.integration || null, agent }));
       }
+      if (req.method === 'GET' && url.pathname === '/api/stats') return send(res, 200, store.stats());
       const match = /^\/api\/tickets\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname);
       if (match) {
         const id = ticketId(decodeURIComponent(match[1])), action = match[2];
@@ -184,12 +201,16 @@ export function createServer(config, adapters = {}) {
       }
       if (req.method === 'GET' && ['/', '/app.js', '/style.css', '/components.css', '/markdown.css', '/attachments.css', '/mark.svg'].includes(url.pathname)) {
         const file = path.join(publicRoot, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
-        res.writeHead(200, { 'Content-Type': mime[path.extname(file)] }); fs.createReadStream(file).pipe(res); return;
+        if (!fs.existsSync(file)) throw new AppError('Arquivo não encontrado.', 404);
+        const stat = fs.statSync(file), etag = `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+        if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag, 'Cache-Control': 'public, max-age=0, must-revalidate' }); return res.end(); }
+        res.writeHead(200, { 'Content-Type': mime[path.extname(file)], ETag: etag, 'Cache-Control': 'public, max-age=0, must-revalidate' }); fs.createReadStream(file).pipe(res); return;
       }
       throw new AppError('Página não encontrada.', 404);
     } catch (e) { if (!res.headersSent) send(res, e.status || 500, { error: redact(e.message || 'Erro inesperado.') }); else res.end(); }
   });
   server.requestTimeout = 180_000;
+  server.on('close', () => { unsubscribe(); ticketWatcher?.close(); for (const res of streams) { try { res.end(); } catch {} } streams.clear(); });
   return { server, store, token };
 }
 

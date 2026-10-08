@@ -99,6 +99,7 @@ export function defaultConfig(appRoot) {
 export class Store {
   constructor(config) {
     this.config = config;
+    this.listeners = new Set();
     this.root = config.dataRoot;
     fs.mkdirSync(path.join(this.root, 'tickets'), { recursive: true });
     // A terminal/agent can be closed abruptly, leaving a lock behind without
@@ -112,6 +113,8 @@ export class Store {
   stateFile(id) { return path.join(this.stateDir(id), 'estado.json'); }
   get(id) { const value = readJson(this.file(id, 'ticket.json')); if (!value) throw new AppError('Ticket não encontrado.', 404); return value; }
   save(record) { atomicJson(this.file(record.id, 'ticket.json'), { ...record, updatedAt: now() }); }
+  subscribe(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  notify(payload = {}) { for (const listener of this.listeners) { try { listener(payload); } catch {} } }
   runtime(id) { return readJson(this.file(id, 'runtime.json')); }
   reapStaleLocks() {
     const cleaned = [];
@@ -163,7 +166,9 @@ export class Store {
   }
   event(id, type, message) {
     fs.mkdirSync(this.dir(id), { recursive: true });
-    fs.appendFileSync(this.file(id, 'events.jsonl'), JSON.stringify({ at: now(), type, message: redact(message).slice(0, 1600) }) + '\n', { mode: 0o600 });
+    const event = { at: now(), type, message: redact(message).slice(0, 1600) };
+    fs.appendFileSync(this.file(id, 'events.jsonl'), JSON.stringify(event) + '\n', { mode: 0o600 });
+    this.notify({ id: ticketId(id), type });
   }
   events(id) {
     try { return fs.readFileSync(this.file(id, 'events.jsonl'), 'utf8').trim().split('\n').slice(-60).flatMap(x => { try { return [JSON.parse(x)]; } catch { return []; } }).reverse(); }
@@ -193,6 +198,18 @@ export class Store {
     const missing = record.attachments.filter(x => !names.some(n => n.toLowerCase() === x.toLowerCase()));
     return { directory: dir, exists: fs.existsSync(dir), names, missing };
   }
+  summary(id) {
+    const ticket = this.get(id); let state = null, stateError = null;
+    try { state = this.state(id); } catch (e) { stateError = e.message; }
+    const runtime = this.runtime(id);
+    const running = !!runtime && (alive(runtime.pid) || alive(runtime.childPid)) && ['starting', 'running'].includes(runtime.phase);
+    const session = running ? (Date.now() - Date.parse(runtime.heartbeat || runtime.startedAt) > 25_000 ? 'uncertain' : 'running') : runtime ? 'stopped' : 'none';
+    const rawStage = state?.stage === 'entregue' ? 'concluido' : state?.stage;
+    const stage = stateError ? 'bloqueado' : rawStage in STAGES ? rawStage : ticket.prepared ? 'analise' : 'cadastrado';
+    let attachments = { names: [], missing: [], exists: false };
+    try { const info = this.attachmentInfo(ticket); attachments = { names: info.names, missing: info.missing, exists: info.exists }; } catch (e) { attachments.error = e.message; }
+    return { id: ticket.id, ticket: ticket.ticket, sprint: ticket.sprint, release: ticket.release, title: ticket.title, delivery: ticket.delivery, agent: ticket.agent, repositoryId: ticket.repositoryId, prepared: !!ticket.prepared, branch: ticket.branch, worktree: ticket.worktree, updatedAt: ticket.updatedAt, stage, stageLabel: STAGES[stage], stateError, session, runtime: runtime ? { phase: runtime.phase, error: runtime.error, heartbeat: runtime.heartbeat } : null, attachments: { missing: attachments.missing, count: attachments.names.length, exists: attachments.exists, error: attachments.error } };
+  }
   view(id) {
     const ticket = this.get(id); let state, stateError = null;
     try { state = this.state(id); } catch (e) { stateError = e.message; }
@@ -203,7 +220,22 @@ export class Store {
     let attachments; try { attachments = this.attachmentInfo(ticket); } catch (e) { attachments = { names: [], missing: [], error: e.message }; }
     return { ...ticket, stage, stageLabel: STAGES[stage], state: state ?? null, stateError, session, runtime, approval: this.currentApproval(id), attachments, events: this.events(id) };
   }
-  list() { return fs.readdirSync(path.join(this.root, 'tickets'), { withFileTypes: true }).filter(x => x.isDirectory() && /^[a-z]{2,8}\d{2,8}$/i.test(x.name)).map(x => this.view(x.name)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
+  list(options = {}) {
+    const stageFilter = options.stage || 'active', query = String(options.q || '').trim().toLowerCase(), repository = String(options.repository || '').toLowerCase(), agent = String(options.agent || '').toLowerCase(), limit = Math.min(Math.max(Number(options.limit) || 250, 1), 500);
+    let entries = [];
+    try { entries = fs.readdirSync(path.join(this.root, 'tickets'), { withFileTypes: true }); } catch { return []; }
+    return entries.filter(x => x.isDirectory() && /^[a-z]{2,8}\d{2,8}$/i.test(x.name)).map(x => this.summary(x.name)).filter(ticket => {
+      if (stageFilter === 'active' && ticket.stage === 'concluido') return false;
+      if (stageFilter === 'done' && ticket.stage !== 'concluido') return false;
+      if (repository && String(ticket.repositoryId || '').toLowerCase() !== repository) return false;
+      if (agent && String(ticket.agent || '').toLowerCase() !== agent) return false;
+      return !query || `${ticket.id} ${ticket.title} ${ticket.release}`.toLowerCase().includes(query);
+    }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, limit);
+  }
+  stats() {
+    const all = this.list({ stage: 'all', limit: 500 });
+    return { total: all.length, active: all.filter(x => x.stage !== 'concluido').length, running: all.filter(x => ['running', 'uncertain'].includes(x.session)).length, attention: all.filter(x => /aguardando|bloqueado/.test(x.stage) || x.runtime?.phase === 'error' || x.stateError).length, done: all.filter(x => x.stage === 'concluido').length };
+  }
   reserve(id) {
     this.get(id);
     const lock = this.file(id, 'active.lock'), previous = readJson(lock);

@@ -203,3 +203,18 @@ test('HTTP launch failure preserves worktree and retry reuses session without du
   failed = false; assert.equal((await start()).status,200);
   assert.equal((await start()).status,409); assert.equal(launches,2); assert.equal(adds,1);
 });
+
+test('summary endpoints, statistics, SSE updates and static ETag are available', async t => {
+  const {config,store,ticket} = fixture(t), app = createServer(config,{skipMemory:true});
+  await new Promise(resolve => app.server.listen(0,'127.0.0.1',resolve));
+  t.after(() => new Promise(resolve => app.server.close(resolve)));
+  const origin = `http://127.0.0.1:${app.server.address().port}`, boot = await fetch(`${origin}/bootstrap?token=${app.token}`,{redirect:'manual'}), cookie = boot.headers.get('set-cookie').split(';')[0], headers = {Cookie:cookie};
+  const list = await (await fetch(`${origin}/api/tickets`,{headers})).json();
+  assert.equal(list.length,1); assert.equal(list[0].id,ticket.id); assert.equal('events' in list[0],false);
+  assert.equal((await (await fetch(`${origin}/api/tickets/${ticket.id}`,{headers})).json()).events.length,1);
+  assert.equal((await (await fetch(`${origin}/api/stats`,{headers})).json()).active,1);
+  const first = await fetch(`${origin}/`,{headers}), etag = first.headers.get('etag'); assert.ok(etag);
+  assert.equal((await fetch(`${origin}/`,{headers:{...headers,'If-None-Match':etag}})).status,304);
+  const sse = await fetch(`${origin}/api/stream`,{headers}); assert.equal(sse.status,200); assert.match(sse.headers.get('content-type'),/text\/event-stream/); await sse.body.cancel();
+  store.event(ticket.id,'teste','Atualização SSE');
+});
