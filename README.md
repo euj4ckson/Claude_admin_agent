@@ -62,6 +62,10 @@ Use **Importar do Azure** na tela inicial e cole o link do work item (ou somente
 
 O repositório, agente, tipo de branch, forma de entrega e anexos ficam revisáveis antes do cadastro. Os anexos selecionados são baixados para a pasta de referências do ticket. A importação não abre Claude/Codex e não publica branch, PR ou comentário no Azure. Se o Azure não informar o código do ticket ou a sprint em formato numérico, esses campos devem ser preenchidos manualmente na prévia.
 
+### Computer Use nas sessões Claude
+
+Tickets Claude novos recebem um servidor MCP local `central-computer` iniciado somente durante a sessão do ticket. Ele fornece captura de tela, janela ativa, clique, teclado e espera visual. Os prints são gravados diretamente em `scratch/evidence` com o ticket no nome do arquivo e retornados ao Claude como imagem para inspeção. A sessão deve manter o sistema sob teste em primeiro plano, não capturar credenciais e incluir os estados `before`, `action` e `result` no documento final. Sessões antigas precisam ser encerradas e abertas novamente para carregar o MCP.
+
 O filtro inicial mostra somente tickets em andamento. Tickets entregues podem ser consultados pelo filtro **Entregues**.
 
 ## Regras de branches
@@ -138,6 +142,12 @@ node --check central/public/app.js
 - Sessões Claude recebem os hooks e as políticas da Central.
 - Sessões Codex usam `workspace-write` e aprovação sob demanda; os hooks específicos do Claude não são aplicados ao Codex.
 - A Central não substitui a revisão humana do diff, dos testes e dos dados usados.
+
+### Gates de qualidade e evidencias
+
+Cada worktree nova recebe `test-matrix.json`, `evidence-manifest.json` e a pasta `scratch/evidence`. O agente deve registrar, para cada criterio e variante, o esperado, o obtido, o resultado e uma referencia real de log, consulta, screenshot ou artefato. A Central confere se os caminhos existem e ficam dentro das pastas permitidas.
+
+O commit local e bloqueado quando faltam compilacao, testes, revisao, esperado/obtido ou evidencias declaradas. O status **Entregue** e bloqueado quando ha resultado falho, pendente, bloqueado ou nao executado, quando um teste de tela nao tem screenshot, ou quando o documento final/evidencias informados nao existem. A tela mostra os motivos concretos para correcao, em vez de aceitar apenas um `estado.json` autoafirmado.
 
 ## Estrutura principal
 

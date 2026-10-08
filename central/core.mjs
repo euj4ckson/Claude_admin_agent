@@ -14,6 +14,101 @@ export const STAGES = {
   aguardando_decisao_revisao: 'Decisão de revisão', aguardando_validacao_manual: 'Validação manual',
   bloqueado: 'Precisa de atenção', entrega: 'Preparando entrega', concluido: 'Entregue localmente'
 };
+
+const BAD_RESULTS = /^(?:falha|failed|erro|bloqueado|pendente|nao executado|não executado|inconclusivo|unknown)$/i;
+const UI_TEST = /(?:tela|ui|manual|visual|interface|click|clique|screen|screenshot|print)/i;
+const asList = value => Array.isArray(value) ? value : value == null || value === '' ? [] : [value];
+const normalizedResult = item => String(item?.result ?? item?.status ?? '').trim();
+const pathLike = value => typeof value === 'string' && /(?:[\\/]|\.(?:png|jpg|jpeg|gif|log|txt|json|sql|xml|html|docx|pdf))$/i.test(value);
+
+function evidenceReferences(item) {
+  const refs = [];
+  for (const key of ['evidence', 'evidencias', 'evidence_files', 'evidence_images', 'screenshots', 'screenshot', 'log', 'artifact', 'output_file', 'raw_output']) {
+    for (const value of asList(item?.[key])) if (typeof value === 'string' && value.trim()) refs.push(value.trim());
+  }
+  return [...new Set(refs)];
+}
+
+function resolveEvidencePath(store, record, value) {
+  if (!pathLike(value)) return null;
+  const candidate = path.isAbsolute(value) ? value : path.join(store.stateDir(record.id), value);
+  const roots = [store.stateDir(record.id), path.join(store.config.documents_root, record.id.toLowerCase())];
+  return roots.some(root => inside(root, candidate)) ? candidate : null;
+}
+
+/**
+ * Quality gate shared by the UI and the hook. It deliberately distinguishes
+ * structural readiness (safe to commit) from delivery readiness (safe to mark
+ * delivered). State entries are evidence pointers, not a self-certification.
+ */
+export function qualityReport(store, record, state = null) {
+  const current = state ?? (() => { try { return store.state(record.id); } catch { return null; } })();
+  const structural = [], delivery = [], evidence = [], entries = [];
+  if (!current || typeof current !== 'object') structural.push('estado.json ausente ou inválido');
+  const build = Array.isArray(current?.build) ? current.build : [];
+  const tests = Array.isArray(current?.tests) ? current.tests : [];
+  const review = current?.review;
+  let manifest = null;
+  try { manifest = readJson(path.join(store.stateDir(record.id), 'evidence-manifest.json')); } catch { structural.push('manifesto de evidencias invalido'); }
+  const manifestRefs = new Set(asList(manifest?.entries).flatMap(entry => typeof entry === 'string' ? [entry] : [entry?.path, entry?.file, entry?.evidence].filter(Boolean)).map(String));
+  if (Number(current?.schema_version || 1) >= 2 && (!manifest || !Array.isArray(manifest.entries))) structural.push('manifesto de evidências ausente ou inválido');
+  if (!build.length) structural.push('compilação não registrada');
+  if (!tests.length) structural.push('testes não registrados');
+  if (!review || typeof review !== 'object') structural.push('revisão final não registrada');
+  const all = [...build.map((x, i) => ({ ...x, _kind: 'build', _index: i })), ...tests.map((x, i) => ({ ...x, _kind: 'test', _index: i }))];
+  for (const item of all) {
+    const label = `${item._kind}[${item._index}]`;
+    const result = normalizedResult(item);
+    const refs = evidenceReferences(item);
+    if (!result) structural.push(`${label} sem resultado`);
+    if (!item.expected && !item.criterio && !item.criteria) structural.push(`${label} sem esperado/critério`);
+    if (!item.obtained && !item.detail && !item.details && !item.resultado && !item.output) structural.push(`${label} sem obtido/detalhe`);
+    if (!refs.length) evidence.push(`${label} sem referência de evidência`);
+    if (Number(current?.schema_version || 1) >= 2) for (const ref of refs) if (!manifestRefs.has(ref)) evidence.push(`${label}: evidência não declarada no manifesto (${ref})`);
+    const existing = [];
+    for (const ref of refs) {
+      const resolved = resolveEvidencePath(store, record, ref);
+      if (resolved) {
+        if (fs.existsSync(resolved)) existing.push(ref);
+        else evidence.push(`${label}: evidência ausente (${ref})`);
+      } else if (pathLike(ref)) evidence.push(`${label}: caminho de evidência fora das pastas permitidas (${ref})`);
+    }
+    if (UI_TEST.test(`${item.type || ''} ${item.name || ''} ${item.command || ''}`) && !existing.some(x => /\.(?:png|jpe?g|gif)$/i.test(x))) {
+      delivery.push(`${label}: teste de tela sem screenshot existente`);
+    }
+    entries.push({ kind: item._kind, index: item._index, name: item.name || item.type || item.project || `${item._kind} ${item._index + 1}`, result, references: refs, existing });
+    if (BAD_RESULTS.test(result)) delivery.push(`${label}: resultado ${result}`);
+  }
+  const verdict = String(review?.verdict ?? review?.resultado ?? '').trim();
+  if (!verdict) structural.push('revisão sem veredicto');
+  if (BAD_RESULTS.test(verdict) || /(?:bloque|pend|falh|fora do escopo não resolvido)/i.test(verdict)) delivery.push(`revisão com veredicto não aprovável: ${verdict}`);
+  const budget = current?.change_budget, guard = current?.scope_guard;
+  if (budget && guard) {
+    if (Array.isArray(budget.planned_files) && budget.planned_files.length > Number(guard.max_planned_files || Infinity)) structural.push('quantidade de arquivos acima do scope_guard');
+    if (Number.isFinite(Number(budget.estimated_added_lines)) && Number(budget.estimated_added_lines) > Number(guard.max_planned_added_lines || Infinity)) structural.push('linhas adicionadas acima do scope_guard');
+    if (Number.isFinite(Number(budget.estimated_deleted_lines)) && Number(budget.estimated_deleted_lines) > Number(guard.max_planned_deleted_lines || Infinity)) structural.push('linhas removidas acima do scope_guard');
+  }
+  const document = current?.document;
+  if (current?.stage === 'concluido' || current?.stage === 'entregue') {
+    if (!document?.path) delivery.push('documento final não registrado');
+    else if (pathLike(document.path) && !fs.existsSync(document.path)) delivery.push('documento final não encontrado');
+    const images = asList(document?.evidence_images);
+    for (const image of images) if (!fs.existsSync(image)) delivery.push(`evidência do documento ausente (${image})`);
+    if (!images.length && all.some(x => UI_TEST.test(`${x.type || ''} ${x.name || ''} ${x.command || ''}`))) delivery.push('documento final sem imagens de evidência para teste de tela');
+  }
+  const commitReady = !structural.length && !evidence.length;
+  const deliveryReady = commitReady && !delivery.length;
+  return { commitReady, deliveryReady, structural, evidence, delivery, entries };
+}
+
+function ensureQualityFiles(store, record) {
+  const root = store.stateDir(record.id);
+  fs.mkdirSync(path.join(root, 'scratch', 'evidence'), { recursive: true });
+  const matrix = path.join(root, 'test-matrix.json');
+  if (!fs.existsSync(matrix)) atomicJson(matrix, { schema_version: 1, ticket: record.id, criteria: [], instruction: 'Uma entrada por critério/variante; registre esperado, obtido, resultado e evidência.', updated_at: now() });
+  const manifest = path.join(root, 'evidence-manifest.json');
+  if (!fs.existsSync(manifest)) atomicJson(manifest, { schema_version: 1, ticket: record.id, entries: [], instruction: 'Liste somente evidências existentes, com caminho relativo ao estado ou documento.', updated_at: now() });
+}
 export class AppError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
@@ -206,10 +301,11 @@ export class Store {
     const running = !!runtime && (alive(runtime.pid) || alive(runtime.childPid)) && ['starting', 'running'].includes(runtime.phase);
     const session = running ? (Date.now() - Date.parse(runtime.heartbeat || runtime.startedAt) > 25_000 ? 'uncertain' : 'running') : runtime ? 'stopped' : 'none';
     const rawStage = state?.stage === 'entregue' ? 'concluido' : state?.stage;
-    const stage = stateError ? 'bloqueado' : rawStage in STAGES ? rawStage : ticket.prepared ? 'analise' : 'cadastrado';
+    const quality = stateError ? { commitReady: false, deliveryReady: false, structural: [stateError], evidence: [], delivery: [], entries: [] } : qualityReport(this, ticket, state);
+    const stage = stateError ? 'bloqueado' : (['concluido'].includes(rawStage) && !quality.deliveryReady) ? 'bloqueado' : rawStage in STAGES ? rawStage : ticket.prepared ? 'analise' : 'cadastrado';
     let attachments = { names: [], missing: [], exists: false };
     try { const info = this.attachmentInfo(ticket); attachments = { names: info.names, missing: info.missing, exists: info.exists }; } catch (e) { attachments.error = e.message; }
-    return { id: ticket.id, ticket: ticket.ticket, sprint: ticket.sprint, release: ticket.release, title: ticket.title, delivery: ticket.delivery, agent: ticket.agent, repositoryId: ticket.repositoryId, prepared: !!ticket.prepared, branch: ticket.branch, worktree: ticket.worktree, updatedAt: ticket.updatedAt, stage, stageLabel: STAGES[stage], stateError, session, runtime: runtime ? { phase: runtime.phase, error: runtime.error, heartbeat: runtime.heartbeat } : null, attachments: { missing: attachments.missing, count: attachments.names.length, exists: attachments.exists, error: attachments.error } };
+    return { id: ticket.id, ticket: ticket.ticket, sprint: ticket.sprint, release: ticket.release, title: ticket.title, delivery: ticket.delivery, agent: ticket.agent, repositoryId: ticket.repositoryId, prepared: !!ticket.prepared, branch: ticket.branch, worktree: ticket.worktree, updatedAt: ticket.updatedAt, stage, stageLabel: STAGES[stage], stateError, session, runtime: runtime ? { phase: runtime.phase, error: runtime.error, heartbeat: runtime.heartbeat } : null, quality: { commitReady: quality.commitReady, deliveryReady: quality.deliveryReady, issues: [...quality.structural, ...quality.evidence, ...quality.delivery].slice(0, 12), counts: { structural: quality.structural.length, evidence: quality.evidence.length, delivery: quality.delivery.length } }, attachments: { missing: attachments.missing, count: attachments.names.length, exists: attachments.exists, error: attachments.error } };
   }
   view(id) {
     const ticket = this.get(id); let state, stateError = null;
@@ -217,9 +313,10 @@ export class Store {
     const runtime = this.runtime(id), running = !!runtime && (alive(runtime.pid) || alive(runtime.childPid)) && ['starting', 'running'].includes(runtime.phase);
     const session = running ? (Date.now() - Date.parse(runtime.heartbeat || runtime.startedAt) > 25_000 ? 'uncertain' : 'running') : runtime ? 'stopped' : 'none';
     const rawStage = state?.stage === 'entregue' ? 'concluido' : state?.stage;
-    const stage = stateError ? 'bloqueado' : rawStage in STAGES ? rawStage : ticket.prepared ? 'analise' : 'cadastrado';
+    const quality = stateError ? { commitReady: false, deliveryReady: false, structural: [stateError], evidence: [], delivery: [], entries: [] } : qualityReport(this, ticket, state);
+    const stage = stateError ? 'bloqueado' : (['concluido'].includes(rawStage) && !quality.deliveryReady) ? 'bloqueado' : rawStage in STAGES ? rawStage : ticket.prepared ? 'analise' : 'cadastrado';
     let attachments; try { attachments = this.attachmentInfo(ticket); } catch (e) { attachments = { names: [], missing: [], error: e.message }; }
-    return { ...ticket, stage, stageLabel: STAGES[stage], state: state ?? null, stateError, session, runtime, approval: this.currentApproval(id), attachments, events: this.events(id) };
+    return { ...ticket, stage, stageLabel: STAGES[stage], state: state ?? null, stateError, session, runtime, approval: this.currentApproval(id), quality, attachments, events: this.events(id) };
   }
   list(options = {}) {
     const stageFilter = options.stage || 'active', query = String(options.q || '').trim().toLowerCase(), repository = String(options.repository || '').toLowerCase(), agent = String(options.agent || '').toLowerCase(), limit = Math.min(Math.max(Number(options.limit) || 250, 1), 500);
@@ -308,7 +405,7 @@ function ensureState(store, record) {
   const config = store.config, { worktree, branch, baseSha: base } = record;
   fs.mkdirSync(store.stateDir(record.id), { recursive: true });
   if (!fs.existsSync(store.stateFile(record.id))) atomicJson(store.stateFile(record.id), {
-    schema_version: 1, ticket: record.id, sprint: record.sprint, repository: config.repository,
+    schema_version: 2, ticket: record.id, sprint: record.sprint, repository: config.repository,
     worktree, branch, base_ref: record.release, base_sha: base, stage: 'analise', scope_revision: 1,
     implementation_approval: null, approved_scope_sha256: null, active_session: record.sessionId,
     integration_branch: record.integration_branch || null,
@@ -318,6 +415,7 @@ function ensureState(store, record) {
     change_budget: { planned_files: [], estimated_added_lines: null, estimated_deleted_lines: null, approved_expansion: false, correction_rounds: 0 },
     blockers: [], next_action: 'Provar a menor correcao, registrar o plano minimo e aguardar aprovacao.', updated_at: now()
   });
+  ensureQualityFiles(store, record);
 }
 
 export function initialPrompt(store, record) {
@@ -334,20 +432,23 @@ export function writeSessionFiles(store, record) {
   // Hooks come from an ephemeral --plugin-dir, alongside existing AI Memory hooks.
   // This settings file adds only session-scoped deny rules, never replaces global hooks.
   const settings = {
-    permissions: { deny: ['Bash(git push *)', 'Bash(git -C * push *)', 'PowerShell(git push *)'] }
+    permissions: { allow: ['mcp__central-computer__computer_screenshot', 'mcp__central-computer__computer_active_window', 'mcp__central-computer__computer_click', 'mcp__central-computer__computer_type', 'mcp__central-computer__computer_key', 'mcp__central-computer__computer_wait'], deny: ['Bash(git push *)', 'Bash(git -C * push *)', 'PowerShell(git push *)'] }
   };
   atomicJson(store.file(record.id, 'session-settings.json'), settings);
+  const evidenceRoot = path.join(store.stateDir(record.id), 'scratch', 'evidence');
+  atomicJson(store.file(record.id, 'mcp-servers.json'), { mcpServers: { 'central-computer': { command: store.config.node || process.execPath, args: [path.join(store.config.appRoot, 'central', 'computer-use.mjs')], env: { CENTRAL_TICKET_ID: record.id, CENTRAL_TICKET_EVIDENCE: evidenceRoot } } } });
   const standardGuidance = record.repository_standard?.integration === 'pre_main' ? 'Use main como origem e pre_main como destino de homologação; push direto não faz parte deste fluxo. Atualize o clone antes de começar se necessário. ' + (record.repository_standard.restore_nuget ? 'No WCF do FVA, execute Restore NuGet Packages antes do primeiro build. ' : '') + 'Não versione bin/, obj/, .vs/ ou packages/.\n' : '';
   fs.writeFileSync(store.file(record.id, 'session-context.txt'), `${erp ? '' : 'Este ticket pertence a um repositório genérico; não aplique regras específicas do ERP, SQL ou da skill desenvolver-ticket sem que o escopo as exija.\n'}` + standardGuidance + `Esta sessao pertence ao ticket ${record.id} da Central de Tickets.\n` +
     `Leia e mantenha o estado do coordenador em ${store.stateFile(record.id)}. Nunca edite o cadastro, approval.json, active.lock ou os scripts da Central.\n` +
     `Antes de implementar, salve o plano minimo em ${path.join(store.stateDir(record.id), 'escopo.md')}: comportamento atual que ja funciona, causa confirmada, menor patch, arquivos/metodos, estimativa de linhas, testes diretamente afetados, limites negativos e uma secao Fora do escopo. Registre tambem change_budget no estado. Preserve tudo que ja satisfaz o aceite. Registre stage=aguardando_aprovacao e peca ao usuario a frase exata APROVAR ${record.id}. O hook registra essa decisao vinculada ao SHA-256 do plano. Nao aprove por memoria ou por conta propria.\n` +
     `Regra anti-delirio: nao refatore legado, nao crie mecanismo novo e nao corrija achado preexistente so porque parece melhor. Se precisar tocar arquivo/camada/tabela/projeto fora do plano, ou ultrapassar a estimativa/limite do scope_guard, PARE antes de editar, explique a expansao e solicite nova aprovacao. Nao use code review para autoautorizar expansao.\n` +
+    `A Central criou ${path.join(store.stateDir(record.id), 'test-matrix.json')} e ${path.join(store.stateDir(record.id), 'evidence-manifest.json')}. Mantenha ambos sincronizados: uma entrada por criterio/variante e uma referencia para cada log, consulta, screenshot ou artefato realmente existente. Caminho inexistente, texto generico ou evidencia apenas presumida nao conta.\n` +
     `Faca primeiro uma prova de suficiencia: escreva qual regra existente ja atende, qual linha/condicao causa o defeito e por que a correcao minima resolve. Uma rodada de correcao e o padrao; nova rodada exige decisao do usuario.\n` +
      `Antes de aprovar o plano, faca um mapa de variantes e rotinas paralelas: pesquise todas as entradas que chegam ao mesmo comportamento, implementacoes equivalentes em outros forms/DAOs/projetos, chamadas de banco/migrations e caminhos de inclusao, alteracao, exclusao e repeticao. Para schema/migration, compare explicitamente os estados FK inexistente, existente confiavel, NOCHECK/desabilitada, indices/constraints conflitantes, dados orfaos, reaplicacao e rollback. Registre uma matriz por variante com esperado, obtido e evidencia; cada caso relevante deve ser executado ou marcado BLOQUEADO/NAO EXECUTADO, nunca presumido por um unico caminho feliz. Para telas e eventos com estado, teste tambem sequencias de transicao (0->1->2, 2->1, desselecionar, reordenar, cancelar, confirmar e reabrir), diferenciando preferencia persistente de estado derivado da operacao; nunca altere ou grave uma preferencia apenas para limitar uma operacao momentanea.\n` +
      `Revisao obrigatoria antes de declarar concluido: releia o escopo e cada criterio de aceite, confira o diff completo contra a base (git diff --check, arquivos alterados, linhas geradas e arquivos fora do plano), procure regressao nos caminhos sem alteracao, valide cenarios positivo/negativo, limites e transicoes de estado, confirme que build/testes realmente executaram e registre review com verdict, evidencias, achados confirmados e pendencias. Nao trate compilacao parcial, simulacao, estado final isolado ou inspecao de uma unica funcao como revisao suficiente. Se houver qualquer duvida, resultado nao executado ou arquivo incidental, pare em revisao/validacao_manual e informe o usuario; nao marque concluido para encerrar a conversa.\n` +
     `Evidencias concretas sao obrigatorias no estado e no documento final: para cada criterio, registre comando completo (ou passos manuais), data/hora, worktree, branch, base_sha/commit, arquivos e linhas/metodos conferidos, ambiente e banco usado (servidor/instancia/base, sempre sem credenciais), resultado bruto resumido, esperado versus obtido e classificacao OK/FALHA/BLOQUEADO/NAO EXECUTADO. Para teste manual, registre pre-condicoes, dados de entrada, passos numerados, resultado observado e evidencia disponivel (log, screenshot ou consulta somente leitura). Nao escreva apenas “validado”, “testado”, “sem regressao” ou “funciona”: toda afirmacao deve apontar para uma evidencia verificavel.\n` +
-    `Para qualquer teste em tela, capture prints dos estados relevantes (antes, acao e resultado), salve-os no scratch/evidence do ticket com nomes que identifiquem o cenario e inclua as imagens no DOCX final com legenda, data/hora, ambiente, dados usados e esperado versus obtido. O print nao substitui logs/consultas quando eles forem necessarios. Se a sessao nao tiver ferramenta de captura ou a tela nao puder ser executada, registre explicitamente SCREENSHOT_NAO_EXECUTADO e entregue um roteiro manual; nunca invente print ou trate ausencia de imagem como OK.\n` +
-    `Antes de comandos de compilacao/testes/limpeza de banco, registre stage=compilacao ou testes. Execute esses comandos de forma sincrona. A central concede um recurso compartilhado de execucao a uma sessao por vez. Se ele estiver ocupado, informe o ticket dono, encerre o turno e aguarde o usuario pedir para continuar; nao faca tentativas repetidas nem contorne o controle.\n` +
+    `A sessao possui a ferramenta MCP central-computer para operar a tela local: use computer_active_window, computer_screenshot (labels before/action/result), computer_click, computer_type, computer_key e computer_wait. Antes de cada cenario, confirme a janela em primeiro plano; capture os estados antes, acao e resultado, salve-os em ${evidenceRoot} e inclua as imagens no DOCX final com legenda, data/hora, ambiente, dados usados e esperado versus obtido. Nao capture credenciais. O print nao substitui logs/consultas quando eles forem necessarios. Se a ferramenta estiver indisponivel ou a tela nao puder ser executada, registre explicitamente SCREENSHOT_NAO_EXECUTADO e entregue um roteiro manual; nunca invente print ou trate ausencia de imagem como OK.\n` +
+    `Antes de comandos de compilacao/testes/limpeza de banco, registre stage=compilacao ou testes. Execute esses comandos de forma sincrona. A central concede um recurso compartilhado de execucao a uma sessao por vez. Se ele estiver ocupado, informe o ticket dono, encerre o turno e aguarde o usuario pedir para continuar; nao faca tentativas repetidas nem contorne o controle. Antes de commitar, a Central exige compilacao, testes, revisao, esperado/obtido e referencias de evidencias existentes; antes de marcar concluido, tambem exige documento final e nenhum teste falho, bloqueado ou nao executado.\n` +
     `Ao sair dessa etapa, atualize stage e devolva o recurso; SessionEnd tambem libera a reserva. Se o usuario determinar que o ticket deve ser entregue, registre stage=concluido (a Central tambem aceita o legado stage=entregue), delivered.at, commits e pendencias declaradas. Nao publique branch, PR nem mensagens. A entrega configurada e ${record.delivery}.\n` +
     `Apos compactacao, releia o estado e a skill desenvolver-ticket. Se o usuario pedir outra tarefa/ticket, oriente abrir outra sessao pela Central.\n`, 'utf8');
 }

@@ -32,7 +32,7 @@ try {
   // O hook da Central continua sendo a última barreira: caminhos fora do ticket,
   // comandos sensíveis, SQL e operações fora da política permanecem bloqueados
   // ou sujeitos à confirmação manual.
-  const args = ticket.agent === 'codex' ? ['--ask-for-approval', 'on-request', '--sandbox', 'workspace-write', initialPrompt(store, ticket)] : ['--name', ticket.id, '--permission-mode', 'bypassPermissions', '--plugin-dir', path.join(config.appRoot, 'central'), '--settings', store.file(id, 'session-settings.json'), '--append-system-prompt', fs.readFileSync(store.file(id, 'session-context.txt'), 'utf8'), '--add-dir', store.stateDir(id), '--add-dir', path.join(config.documents_root, id.toLowerCase())];
+  const args = ticket.agent === 'codex' ? ['--ask-for-approval', 'on-request', '--sandbox', 'workspace-write', initialPrompt(store, ticket)] : ['--name', ticket.id, '--permission-mode', 'bypassPermissions', '--plugin-dir', path.join(config.appRoot, 'central'), '--settings', store.file(id, 'session-settings.json'), '--mcp-config', store.file(id, 'mcp-servers.json'), '--append-system-prompt', fs.readFileSync(store.file(id, 'session-context.txt'), 'utf8'), '--add-dir', store.stateDir(id), '--add-dir', path.join(config.documents_root, id.toLowerCase())];
   const references = path.join(config.references_root, id.toLowerCase());
   if (fs.existsSync(references)) args.push('--add-dir', references);
   if (ticket.agent !== 'codex' && ticket.sessionStarted) {

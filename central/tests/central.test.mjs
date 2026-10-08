@@ -6,7 +6,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { Store, validateTicket, atomicJson, readJson, inside, prepare, verifyWorktree, writeSessionFiles } from '../core.mjs';
+import { Store, validateTicket, atomicJson, readJson, inside, prepare, verifyWorktree, writeSessionFiles, qualityReport } from '../core.mjs';
 import { approvalPrompt, preTool, acquireExecution, releaseExecution } from '../policy.mjs';
 import { createServer } from '../server.mjs';
 import { htmlToText, parseAzureReference, safeRemoteName } from '../azure.mjs';
@@ -150,6 +150,9 @@ test('real isolated Git worktree preparation, reuse and interrupted preparation 
   assert.equal(git(config.repository,'branch','--show-current'),'release/106.4.3'); assert.equal(git(config.repository,'status','--porcelain'),'');
   assert.equal((await prepare(store,prepared)).worktree,prepared.worktree);
   writeSessionFiles(store,prepared); assert.equal(readJson(store.file(ticket.id,'session-settings.json')).hooks,undefined);
+  const mcp = readJson(store.file(ticket.id,'mcp-servers.json')); assert.equal(mcp.mcpServers['central-computer'].args[0], path.join(config.appRoot, 'central', 'computer-use.mjs')); assert.match(fs.readFileSync(store.file(ticket.id,'session-context.txt'),'utf8'),/computer_screenshot/);
+  assert.ok(fs.existsSync(path.join(store.stateDir(ticket.id),'test-matrix.json')));
+  assert.ok(fs.existsSync(path.join(store.stateDir(ticket.id),'evidence-manifest.json')));
   const guidance = fs.readFileSync(store.file(ticket.id,'session-context.txt'),'utf8');
   assert.match(guidance,/sequencias de transicao/);
   assert.match(guidance,/preferencia persistente/);
@@ -160,6 +163,20 @@ test('real isolated Git worktree preparation, reuse and interrupted preparation 
   const second = store.create(input('GER5801'));
   const planned = path.join(config.new_worktrees_root,'165-ger5801'); fs.mkdirSync(planned); fs.writeFileSync(path.join(planned,'keep.txt'),'keep');
   await assert.rejects(prepare(store,second)); assert.equal(fs.readFileSync(path.join(planned,'keep.txt'),'utf8'),'keep');
+});
+
+test('quality gate requires concrete evidence and prevents false delivery', t => {
+  const {store,config} = fixture(t), ticket = store.create({...input('GER5802'), delivery:'local_commit_only'});
+  plan(store,ticket);
+  const evidenceDir = path.join(store.stateDir(ticket.id),'scratch','evidence'); fs.mkdirSync(evidenceDir,{recursive:true});
+  const log = path.join(evidenceDir,'teste.log'); fs.writeFileSync(log,'resultado bruto OK\n');
+  atomicJson(path.join(store.stateDir(ticket.id),'evidence-manifest.json'),{schema_version:1,ticket:ticket.id,entries:[{path:'scratch/evidence/teste.log'}]});
+  let state = {...store.state(ticket.id), schema_version:2, stage:'aguardando_validacao_manual', build:[{project:'fixture', result:'OK', expected:'build sem erro', obtained:'exit 0', evidence:'scratch/evidence/teste.log'}], tests:[{name:'cenario de banco', result:'OK', expected:'valor esperado', obtained:'valor obtido', evidence:'scratch/evidence/teste.log'}], review:{verdict:'patch minimo confirmado'}};
+  atomicJson(store.stateFile(ticket.id),state); let report = qualityReport(store,ticket,state); assert.equal(report.commitReady,true); assert.equal(report.deliveryReady,true);
+  state = {...state, stage:'concluido'}; atomicJson(store.stateFile(ticket.id),state); report = qualityReport(store,ticket,state); assert.equal(report.deliveryReady,false); assert.match(report.delivery.join(' '),/documento final/);
+  state = {...state, stage:'aguardando_validacao_manual', tests:[{name:'teste de tela', type:'manual_ui', result:'OK', expected:'tela correta', obtained:'tela correta', evidence:'scratch/evidence/teste.log'}]}; atomicJson(store.stateFile(ticket.id),state); report = qualityReport(store,ticket,state); assert.equal(report.deliveryReady,false); assert.match(report.delivery.join(' '),/screenshot/);
+  state = {...state, tests:[{name:'teste de tela', type:'manual_ui', result:'OK', expected:'tela correta', obtained:'tela correta', evidence:['scratch/evidence/teste.log','scratch/evidence/tela.png']}]}; fs.writeFileSync(path.join(evidenceDir,'tela.png'),'png-fixture'); atomicJson(path.join(store.stateDir(ticket.id),'evidence-manifest.json'),{schema_version:1,ticket:ticket.id,entries:[{path:'scratch/evidence/teste.log'},{path:'scratch/evidence/tela.png'}]}); atomicJson(store.stateFile(ticket.id),state); report = qualityReport(store,ticket,state); assert.equal(report.deliveryReady,true);
+  assert.ok(config.documents_root);
 });
 test('hook subprocess registers session and fails closed for incorrect runtime', t => {
   const {store,ticket,config} = fixture(t), runtime = store.reserve(ticket.id);
