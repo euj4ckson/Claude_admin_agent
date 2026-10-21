@@ -4,7 +4,7 @@ Data da verificação: 21/10/2026.
 
 - `dotnet build CentralTickets.DotNet.sln --configuration Release -p:OutDir=<pasta temporária>`: concluído sem avisos ou erros. A saída isolada evitou interromper a instância aberta, que mantinha o assembly de produção carregado.
 - `dotnet test CentralTickets.DotNet.sln --configuration Release -p:OutDir=<pasta temporária>`: 49 testes aprovados; inclui descoberta de clones aninhados, eventos de sessão Codex, fila de AI Memory e metadados reais de qualidade.
-- Teste integrado do runner Codex em dados temporários, com executável local inofensivo no lugar do agente: `SessionStart`/`SessionEnd`, hook .NET, fechamento da reserva e fila local de AI Memory verificados sem iniciar conversa real.
+- Teste integrado de sessão em dados temporários: runner Codex com executável local inofensivo verifica `SessionStart`/`SessionEnd`, fechamento da reserva e fila local de AI Memory; a entrada `stdin` do hook Claude também foi exercitada. Nenhuma conversa real foi iniciada.
 - Build isolado de `CentralTickets.Hook` e `CentralTickets.ComputerMcp`: concluídos sem avisos ou erros.
 - Inicialização isolada da API: bootstrap autenticado, `/health`, página inicial, CSS e perfil responderam corretamente em HTTP.
 - Instância local recompilada e reiniciada sem janela de terminal; `/health` e a página inicial responderam com HTTP 200, e `/api/profile` listou 15 repositórios, incluindo `ss_canhoto_frontend` e `ss_canhoto_backend` aninhados sob outro clone.

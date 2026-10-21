@@ -84,6 +84,35 @@ public sealed class SessionRunnerIntegrationTests : IDisposable
         var events = File.ReadAllText(Path.Combine(ticketDir, "events.jsonl"));
         Assert.Contains("Codex conectado", events);
         Assert.Contains("Codex encerrada", events);
+
+        var claudeDir = Path.Combine(data, "tickets", "ger5902");
+        var claudeState = Path.Combine(states, "ss_erp_tag1", "ger5902");
+        Directory.CreateDirectory(claudeDir);
+        Directory.CreateDirectory(claudeState);
+        var claudeRun = Guid.NewGuid().ToString();
+        var claudeSession = Guid.NewGuid().ToString();
+        WriteJson(Path.Combine(claudeDir, "ticket.json"), new JsonObject
+        {
+            ["id"] = "GER5902", ["ticket"] = "GER5902", ["agent"] = "claude", ["repository"] = worktree,
+            ["repositoryId"] = "ss_erp_tag1", ["worktree"] = worktree, ["branch"] = "feature/166/ger5902",
+            ["prepared"] = true, ["title"] = "Fixture Claude", ["scope"] = "Teste isolado do hook Claude.",
+            ["delivery"] = "no_commit", ["sessionId"] = claudeSession, ["sessionIds"] = new JsonArray(claudeSession)
+        });
+        WriteJson(Path.Combine(claudeDir, "runtime.json"), new JsonObject { ["runId"] = claudeRun, ["phase"] = "running", ["startedAt"] = DateTimeOffset.UtcNow.ToString("O") });
+        WriteJson(Path.Combine(claudeDir, "active.lock"), new JsonObject { ["runId"] = claudeRun });
+        WriteJson(Path.Combine(claudeState, "estado.json"), new JsonObject { ["ticket"] = "GER5902", ["stage"] = "analise", ["scope_revision"] = 1 });
+        var hookDll = Path.Combine(hookDir, "CentralTickets.Hook.dll");
+        using var hookProcess = StartHook(hookDll, data, "GER5902", claudeRun);
+        await hookProcess.StandardInput.WriteLineAsync(new JsonObject { ["hook_event_name"] = "SessionStart", ["session_id"] = claudeSession }.ToJsonString());
+        hookProcess.StandardInput.Close();
+        var hookOutput = await hookProcess.StandardOutput.ReadToEndAsync();
+        var hookError = await hookProcess.StandardError.ReadToEndAsync();
+        await hookProcess.WaitForExitAsync(timeout.Token);
+
+        Assert.True(hookProcess.ExitCode == 0, hookError);
+        Assert.Contains("SessionStart", hookOutput);
+        Assert.True(ReadJson(Path.Combine(claudeDir, "ticket.json"))["sessionStarted"]?.GetValue<bool>());
+        Assert.Equal("SessionStart", ReadJson(Path.Combine(claudeDir, "hook-status.json"))["event"]?.GetValue<string>());
     }
 
     private static string DotnetExecutable()
@@ -93,6 +122,16 @@ public sealed class SessionRunnerIntegrationTests : IDisposable
         var executable = Path.Combine(root.FullName, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
         if (!File.Exists(executable)) throw new FileNotFoundException("Host dotnet nÃ£o encontrado.", executable);
         return executable;
+    }
+
+    private static Process StartHook(string hookDll, string dataRoot, string ticketId, string runId)
+    {
+        var start = new ProcessStartInfo(DotnetExecutable()) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add(hookDll);
+        start.Environment["CENTRAL_TICKETS_DATA"] = dataRoot;
+        start.Environment["CENTRAL_TICKET_ID"] = ticketId;
+        start.Environment["CENTRAL_TICKET_RUN"] = runId;
+        return Process.Start(start) ?? throw new InvalidOperationException("Hook Claude nÃ£o iniciou.");
     }
 
     private static void WriteJson(string path, JsonNode value)
