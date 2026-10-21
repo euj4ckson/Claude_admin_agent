@@ -1,35 +1,37 @@
 # Central de Tickets em C#
 
-Esta pasta inicia a migração da Central para ASP.NET Core/.NET 10. O servidor Node continua sendo o sistema principal durante a transição; a API C# roda isolada na porta `17862` e não altera os dados existentes.
+Implementação principal da Central em C# e ASP.NET Core 10. Ela usa o cadastro e os estados JSON existentes, sem converter os dados locais.
 
-## O que já foi migrado
+## Projetos
 
-- Endpoint de saúde (`GET /health`).
-- Leitura dos cadastros e estados JSON já usados pela Central.
-- Listagem e filtros por etapa, texto, repositório e agente (`GET /api/tickets`).
-- Detalhe do ticket com estado, anexos e histórico (`GET /api/tickets/{id}`).
-- Interface web responsiva com resumo, busca, filtros por situação, cartões e detalhe formatado do ticket.
-- Dashboard e contagens confiáveis (`GET /api/dashboard` e `GET /api/stats`).
-- Acesso local com token de bootstrap e cookie HttpOnly.
+- `CentralTickets.Api`: interface local, endpoints e serviços de tickets, Azure DevOps, Git/worktrees, uso, eventos e AI Memory.
+- `CentralTickets.Hook`: hook de política das sessões Claude.
+- `CentralTickets.SessionRunner`: reserva, início, retomada e encerramento de sessões.
+- `CentralTickets.ComputerMcp`: ferramentas MCP de captura e interação visual no Windows.
+- `CentralTickets.UsageCollector`: grava snapshots de limite do Claude recebidos pela status line.
+- `CentralTickets.Plugin`: manifesto do plugin Claude com hooks que chamam o executável .NET.
+- `CentralTickets.Api.Tests`: testes unitários e de integração.
 
-## Interface
+## Executar
 
-Abra `http://127.0.0.1:17862` para ver os tickets em andamento. A tela também permite filtrar os entregues ou consultar todos, pesquisar por código/título e abrir os detalhes de cada ticket. O CSS fica em `CentralTickets.Api/wwwroot/style.css` e é servido pela própria aplicação.
-
-Esta tela é uma etapa inicial da migração, não substitui ainda a interface Node. A versão C# permanece somente leitura: não cadastra tickets, não inicia agentes e não altera status ou arquivos de estado.
-
-Esta etapa é deliberadamente somente leitura. Cadastro, Azure, anexos, hooks, aprovação, inicialização de agentes, métricas de tokens e sincronização de conhecimento continuam no Node até que cada fluxo tenha uma implementação C# equivalente e testes.
-
-## Rodar localmente
-
-Requer o SDK .NET 10. Na raiz do repositório:
+Requer Windows e .NET 10 SDK. Na raiz do repositório:
 
 ```powershell
-dotnet build CentralTickets.DotNet.sln
-dotnet test CentralTickets.DotNet.sln
+dotnet build .\CentralTickets.DotNet.sln --configuration Release
+dotnet test .\central-dotnet\CentralTickets.Api.Tests\CentralTickets.Api.Tests.csproj --configuration Release
 .\abrir-central-dotnet.ps1
 ```
 
-O atalho inicia o processo em segundo plano e abre a interface em `http://127.0.0.1:17862`. Ele não fecha nem substitui o servidor Node (`17861`). O processo cria `launch-dotnet.json` na pasta de dados local para armazenar o token de acesso desta instância; ele é removido ao encerrar normalmente. Se reiniciar o servidor manualmente, execute o atalho novamente para autenticar a nova sessão local.
+O servidor é local, em `http://127.0.0.1:17862`. O atalho executa sem console visível e reaproveita os binários já compilados. Para compilar novamente, use `abrir-central-dotnet.ps1 -Recompilar`.
 
-Para apontar a leitura para outra instalação, configure `CENTRAL_TICKETS_DATA_ROOT`, `CENTRAL_TICKETS_STATE_ROOT` e `CENTRAL_TICKETS_REFERENCES_ROOT`. Os cadastros, estados e anexos são lidos sem alterações; apenas o arquivo de sessão `launch-dotnet.json` é criado/removido dentro da pasta de dados.
+## Configuração
+
+A configuração fica em `%LOCALAPPDATA%\CentralTicketsClaude\config.json`. Os caminhos podem ser sobrescritos pelas variáveis `CENTRAL_TICKETS_DATA_ROOT`, `CENTRAL_TICKETS_STATE_ROOT`, `CENTRAL_TICKETS_REFERENCES_ROOT` e `CENTRAL_TICKETS_WORKTREES_ROOT`. A porta padrão é 17862 e pode ser alterada com `CENTRAL_TICKETS_DOTNET_PORT`.
+
+Claude Code e Codex CLI devem estar instalados e autenticados à parte. O token do Azure pode ser configurado pela interface e fica protegido com DPAPI no perfil do Windows.
+
+## Compatibilidade e testes
+
+Os dados JSON existentes são preservados. A aplicação não faz migração em massa; novos registros e eventos usam os mesmos arquivos locais. Os testes incluem fixtures isoladas e chamadas simuladas ao Azure, sem depender de tickets reais.
+
+Para o ERP, use uma cópia local exclusiva de banco. Para os ecossistemas FVA/WCF, a política documentada permite o uso controlado de `SSBDFV_PD` nos cenários cobertos pelo ticket; qualquer gravação continua restrita ao caso aprovado e registrado.

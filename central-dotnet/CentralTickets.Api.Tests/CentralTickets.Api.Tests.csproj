@@ -20,6 +20,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CentralTickets.Api\CentralTickets.Api.csproj" />
+    <ProjectReference Include="..\CentralTickets.UsageCollector\CentralTickets.UsageCollector.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
 </Project>

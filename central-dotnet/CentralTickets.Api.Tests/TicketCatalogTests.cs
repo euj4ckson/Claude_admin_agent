@@ -77,6 +77,30 @@ public sealed class TicketCatalogTests : IDisposable
         Assert.Null(catalog.GetDetails("../../fora"));
     }
 
+    [Fact]
+    public void List_reports_ticket_risk_and_quality_from_saved_state()
+    {
+        AddTicket("GER5802", "revisao", "Teste com falha registrada");
+        var stateFile = Path.Combine(_stateRoot, "ss_erp_tag1", "ger5802", "estado.json");
+        File.WriteAllText(stateFile, """
+            {"stage":"revisao","scope_revision":2,"tests":[{"id":"T1","result":"FALHA: comparação não bate"}],"build":[],"review":{"verdict":"pendente"}}
+            """);
+        var ticketDirectory = Path.Combine(_dataRoot, "tickets", "ger5802");
+        File.WriteAllText(Path.Combine(ticketDirectory, "metrics.json"), """
+            {"totals":{"estimated_input_tokens":120,"estimated_output_tokens":45},"scope_expansions":[{}],"phases":{"bloqueado":{"seconds":90}}}
+            """);
+
+        var summary = Assert.Single(new TicketCatalog(_dataRoot, _stateRoot, _referenceRoot).List("all", null, null, null, 10));
+        var metrics = JsonSerializer.SerializeToNode(summary.Metrics);
+
+        Assert.Equal("red", summary.Risk.Level);
+        Assert.Contains("FALHA", summary.Risk.Reasons[0]);
+        Assert.False(summary.Quality.CommitReady);
+        Assert.Equal(1, metrics?["scope_expansions"]?.GetValue<int>());
+        Assert.Equal(90, metrics?["blocked_seconds"]?.GetValue<int>());
+        Assert.Equal(165, metrics?["tokens"]?["estimated_total"]?.GetValue<int>());
+    }
+
     private void AddTicket(string id, string stage, string title, string? repositoryId = "ss_erp_tag1", string agent = "claude")
     {
         var ticketDirectory = Path.Combine(_dataRoot, "tickets", id.ToLowerInvariant());

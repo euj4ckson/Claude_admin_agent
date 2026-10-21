@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace CentralTickets.Api;
 
@@ -78,7 +80,7 @@ public sealed partial class TicketCatalog
         var stateFile = Path.Combine(stateDirectory, record.Id.ToLowerInvariant(), "estado.json");
         var state = ReadElement(stateFile);
         var runtime = ReadJson<TicketRuntime>(Path.Combine(ticketDirectory, "runtime.json"));
-        var summary = Summarize(ticketDirectory, record);
+        var summary = Summarize(ticketDirectory, record, checkDiff: true);
 
         var attachmentDirectory = Path.Combine(_referenceRoot, record.Id.ToLowerInvariant());
         var attachmentNames = Directory.Exists(attachmentDirectory)
@@ -96,7 +98,7 @@ public sealed partial class TicketCatalog
             summary.StageLabel, state, summary.StateError,
             summary.Session, runtime, ReadElement(Path.Combine(ticketDirectory, "approval.json")),
             events, new AttachmentDetails(attachmentDirectory, Directory.Exists(attachmentDirectory),
-                attachmentNames!, missing));
+                attachmentNames!, missing), summary.Risk, summary.Quality, summary.Metrics);
     }
 
     public static object Stats(IReadOnlyCollection<TicketSummary> all) => new
@@ -108,7 +110,7 @@ public sealed partial class TicketCatalog
         done = all.Count(ticket => ticket.Stage == "concluido")
     };
 
-    private TicketSummary Summarize(string ticketDirectory, TicketRecord record)
+    private TicketSummary Summarize(string ticketDirectory, TicketRecord record, bool checkDiff = false)
     {
         var stateDirectory = StateDirectory(record);
         var stateFile = Path.Combine(stateDirectory, record.Id.ToLowerInvariant(), "estado.json");
@@ -131,15 +133,118 @@ public sealed partial class TicketCatalog
         var stateError = File.Exists(stateFile) && state is null ? "Estado do ticket inválido" : null;
         if (stateError is not null) stage = "bloqueado";
 
+        var stateNode = ReadNode(stateFile);
+        var ticketNode = ReadNode(Path.Combine(ticketDirectory, "ticket.json")) ?? new JsonObject();
+        var shouldCheckDiff = checkDiff && state?.Stage is "revisao" or "entrega" or "aguardando_validacao_manual" or "concluido" or "entregue";
+        var qualityIssues = stateError is null && stateNode is JsonObject qualityState
+            ? new HookPolicy(_dataRoot).CheckCommitQuality(qualityState, ticketNode as JsonObject ?? new JsonObject(), record.Id, shouldCheckDiff).ToList()
+            : stateError is null ? ["Estado do ticket ausente"] : [stateError];
+        var deliveryIssues = new List<string>();
+        if (stage == "concluido")
+        {
+            var documentsRoot = ReadJson<ProfileRecord>(Path.Combine(_dataRoot, "config.json"))?.DocumentsRoot;
+            var documentDirectory = string.IsNullOrWhiteSpace(documentsRoot) ? null : Path.Combine(documentsRoot, record.Id.ToLowerInvariant());
+            var hasDocument = documentDirectory is not null && Directory.Exists(documentDirectory)
+                && Directory.EnumerateFiles(documentDirectory, "*.docx").Any(file => !Path.GetFileName(file).StartsWith("~$", StringComparison.Ordinal));
+            if (!hasDocument) deliveryIssues.Add("Documento final não registrado ou não encontrado");
+        }
+        var allQualityIssues = qualityIssues.Concat(deliveryIssues).Distinct(StringComparer.Ordinal).ToArray();
+        var quality = new QualitySummary(qualityIssues.Count == 0, allQualityIssues.Length == 0, allQualityIssues,
+            new QualityCounts(qualityIssues.Count(issue => !issue.Contains("evidência", StringComparison.OrdinalIgnoreCase)),
+                qualityIssues.Count(issue => issue.Contains("evidência", StringComparison.OrdinalIgnoreCase)), deliveryIssues.Count));
+        var risk = CalculateRisk(stage, stateNode, quality);
+        var metrics = BuildMetrics(record.Id, stateNode, ticketDirectory, quality);
+
         return new TicketSummary(
             record.Id, record.Ticket, record.Sprint, record.Release, record.Title,
             record.Delivery, record.Agent, record.RepositoryId ?? DefaultRepositoryId(), record.Prepared,
             record.Branch, record.Worktree, record.UpdatedAt, stage,
             StageLabels.GetValueOrDefault(stage, "Cadastrado"), stateError, session,
             runtime is null ? null : new RuntimeSummary(runtime.Phase, runtime.Error, runtime.Heartbeat),
-            new RiskSummary("unknown", "Não avaliado", []),
-            new QualitySummary(false, false, stateError is null ? [] : [stateError], new QualityCounts(stateError is null ? 0 : 1, 0, 0)),
-            null, new AttachmentSummary(missing, found.Length, Directory.Exists(attachmentDirectory), null));
+            risk, quality, metrics,
+            new AttachmentSummary(missing, found.Length, Directory.Exists(attachmentDirectory), null));
+    }
+
+    private RiskSummary CalculateRisk(string stage, JsonNode? state, QualitySummary quality)
+    {
+        if (stage == "concluido") return new RiskSummary("none", "Histórico de entrega", []);
+        if (stage is not ("revisao" or "entrega" or "aguardando_validacao_manual" or "bloqueado" or "aguardando_decisao_revisao"))
+            return new RiskSummary("unknown", "Não avaliado", ["Avaliação disponível após testes e revisão."]);
+
+        var tests = state?["tests"] as JsonArray ?? [];
+        var latest = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
+        foreach (var test in tests.OfType<JsonObject>())
+        {
+            if (test["superseded_by"] is not null || test["resolved"]?.GetValue<bool>() == true) continue;
+            var key = GetString(test, "id") ?? GetString(test, "name") ?? $"test-{latest.Count}";
+            latest[key] = test;
+        }
+        var failed = latest.Select(pair => (pair.Key, Result: FirstString(pair.Value, "result", "status", "resultado")))
+            .Where(item => item.Result is not null && Regex.IsMatch(item.Result, "^(FALHA|FALHOU|FAILED|FAIL|ERRO|ERROR)(\\b|:)", RegexOptions.IgnoreCase)
+                && !Regex.IsMatch(item.Result, "AMBIENTE|DEPENDENCIA", RegexOptions.IgnoreCase)).ToArray();
+        if (failed.Length > 0) return new RiskSummary("red", "Falha registrada", failed.Take(5).Select(item => $"{item.Key}: {item.Result}").ToArray());
+
+        var review = state?["review"] as JsonObject;
+        var findings = new[] { "findings", "suspected", "escaped_findings", "out_of_scope" }
+            .SelectMany(key => review?[key] as JsonArray ?? [])
+            .OfType<JsonObject>()
+            .Where(item => item["confirmed"]?.GetValue<bool>() == true && item["resolved"]?.GetValue<bool>() != true
+                && Regex.IsMatch(FirstString(item, "status") ?? "", "^(OPEN|ABERTO|PENDENTE)$", RegexOptions.IgnoreCase)
+                && Regex.IsMatch(FirstString(item, "severity") ?? "", "^(HIGH|CRITICAL|ALTA|CRITICA)$", RegexOptions.IgnoreCase)).ToArray();
+        if (findings.Length > 0) return new RiskSummary("red", "Regressão confirmada", findings.Take(5).Select(item => FirstString(item, "title", "description", "id") ?? "Achado de revisão").ToArray());
+        if (quality.Issues.Length > 0) return new RiskSummary("yellow", "Validação pendente", quality.Issues.Take(5).ToArray());
+        if (quality.DeliveryReady && latest.Count > 0 && review is not null) return new RiskSummary("green", "Validação registrada", ["Testes e revisão registrados com as evidências exigidas."]);
+        return new RiskSummary("unknown", "Não avaliado", ["Não há resultados suficientes para classificar."]);
+    }
+
+    private object BuildMetrics(string id, JsonNode? state, string ticketDirectory, QualitySummary quality)
+    {
+        var raw = ReadNode(Path.Combine(ticketDirectory, "metrics.json")) as JsonObject ?? new JsonObject();
+        var totals = raw["totals"] as JsonObject ?? new JsonObject();
+        var phases = raw["phases"] as JsonObject ?? new JsonObject();
+        var tests = state?["tests"] as JsonArray ?? [];
+        var notExecuted = tests.OfType<JsonObject>().Count(test => Regex.IsMatch(FirstString(test, "result", "status") ?? "", "não executado|nao executado|bloqueado|pendente", RegexOptions.IgnoreCase));
+        var review = state?["review"] as JsonObject;
+        var findingCount = new[] { "suspected", "findings", "escaped_findings", "out_of_scope" }.Sum(key => (review?[key] as JsonArray)?.Count ?? 0);
+        var blockedSeconds = phases["bloqueado"]?["seconds"]?.GetValue<double>() ?? 0;
+        var reviews = (raw["reviews"] as JsonArray)?.Count ?? 0;
+        reviews = Math.Max(reviews, ReadEvents(Path.Combine(ticketDirectory, "events.jsonl")).Count(item => Regex.IsMatch($"{item.Type} {item.Message}", "review|revis|correção|correcao", RegexOptions.IgnoreCase)));
+        if (review is not null) reviews = Math.Max(reviews, 1);
+        var revisions = Math.Max(0, (state?["scope_revision"]?.GetValue<int>() ?? 1) - 1);
+        return new
+        {
+            ticket = id,
+            tokens = new
+            {
+                estimated_input = Number(totals, "estimated_input_tokens"), estimated_output = Number(totals, "estimated_output_tokens"),
+                reported_input = Number(totals, "reported_input_tokens"), reported_output = Number(totals, "reported_output_tokens"),
+                estimated_total = Number(totals, "estimated_input_tokens") + Number(totals, "estimated_output_tokens"), by_phase = phases
+            },
+            scope_expansions = Math.Max((raw["scope_expansions"] as JsonArray)?.Count ?? 0, revisions),
+            reviews, blocked_seconds = blockedSeconds, tests_not_executed = notExecuted,
+            tests_not_executed_rate = tests.Count == 0 ? 0 : (double)notExecuted / tests.Count,
+            test_count = tests.Count, escaped_findings = findingCount,
+            quality = new { commit_ready = quality.CommitReady, delivery_ready = quality.DeliveryReady }
+        };
+    }
+
+    private static string? FirstString(JsonObject? value, params string[] keys)
+    {
+        foreach (var key in keys) if (GetString(value, key) is { Length: > 0 } result) return result;
+        return null;
+    }
+
+    private static string? GetString(JsonObject? value, string key) => value?[key] is JsonValue item && item.TryGetValue<string>(out var result) ? result : null;
+
+    private static double Number(JsonObject? value, string key) => value?[key] is JsonValue number && number.TryGetValue<double>(out var result) ? result : 0;
+
+    private static JsonNode? ReadNode(string file)
+    {
+        try { return JsonNode.Parse(File.ReadAllText(file)); }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+        catch (JsonException) { return null; }
+        catch (IOException) { return null; }
     }
 
     private string StateDirectory(TicketRecord record)
@@ -224,7 +329,7 @@ public sealed partial class TicketCatalog
     [System.Text.RegularExpressions.GeneratedRegex("^[a-z]{2,8}\\d{2,8}$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
     private static partial System.Text.RegularExpressions.Regex TicketIdRegex();
 
-    private sealed record ProfileRecord(string? Repository);
+    private sealed record ProfileRecord(string? Repository, [property: JsonPropertyName("documents_root")] string? DocumentsRoot);
     private sealed record TicketRecord(
         string Id = "", string Ticket = "", string Sprint = "", string Release = "", string Scope = "", string Title = "",
         string Delivery = "", string Agent = "claude", string? RepositoryId = null, string Repository = "",
@@ -269,4 +374,5 @@ public sealed record TicketDetails(
     string? Branch, string? Worktree, string? BaseSha, string Stage, string StageLabel,
     JsonElement? State, string? StateError, string Session, object? Runtime, JsonElement? Approval,
     IReadOnlyList<TicketEvent> Events,
-    [property: JsonPropertyName("attachments")] AttachmentDetails AttachmentInfo);
+    [property: JsonPropertyName("attachments")] AttachmentDetails AttachmentInfo,
+    RiskSummary Risk, QualitySummary Quality, object? Metrics);

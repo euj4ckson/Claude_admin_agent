@@ -18,12 +18,12 @@ public sealed class CentralProfile
             ? value.GetString()
             : null;
 
-    public object Repositories()
+    public IReadOnlyList<CentralRepository> Repositories()
     {
         var configured = GetString("repository");
-        if (string.IsNullOrWhiteSpace(configured)) return Array.Empty<object>();
+        if (string.IsNullOrWhiteSpace(configured)) return Array.Empty<CentralRepository>();
         var root = GetString("repositories_root") ?? Path.GetDirectoryName(configured)!;
-        var entries = new List<RepositoryInfo>();
+        var entries = new List<CentralRepository>();
 
         try
         {
@@ -32,17 +32,28 @@ public sealed class CentralProfile
                 if (!Directory.Exists(Path.Combine(directory, ".git")) && !File.Exists(Path.Combine(directory, ".git"))) continue;
                 var name = Path.GetFileName(directory);
                 var isDefault = Path.GetFullPath(directory).Equals(Path.GetFullPath(configured), StringComparison.OrdinalIgnoreCase);
-                entries.Add(new RepositoryInfo(name, name, directory, isDefault, StandardFor(name)));
+                entries.Add(new CentralRepository(name, name, directory, isDefault, StandardFor(name)));
             }
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
 
         if (!entries.Any(item => item.Default) && (Directory.Exists(Path.Combine(configured, ".git")) || File.Exists(Path.Combine(configured, ".git"))))
-            entries.Add(new RepositoryInfo(Path.GetFileName(configured), Path.GetFileName(configured), configured, true, null));
+            entries.Add(new CentralRepository(Path.GetFileName(configured), Path.GetFileName(configured), configured, true, null));
 
         return entries.OrderByDescending(item => item.Default).ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToArray();
     }
+
+    public CentralRepository? ResolveRepository(string value) => Repositories().FirstOrDefault(item =>
+        string.Equals(item.Id, value, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(item.Path, value, StringComparison.OrdinalIgnoreCase));
+
+    public string? AgentExecutable(string agent) => agent.ToLowerInvariant() switch
+    {
+        "claude" => GetString("claude"),
+        "codex" => GetString("codex"),
+        _ => null
+    };
 
     public async Task<object> GetAsync(IHttpClientFactory clientFactory, CancellationToken cancellationToken)
     {
@@ -134,7 +145,7 @@ public sealed class CentralProfile
         catch (JsonException) { return JsonDocument.Parse("{}"); }
     }
 
-    private static object? StandardFor(string name)
+    private static RepositoryStandard? StandardFor(string name)
     {
         var normalized = name.ToLowerInvariant();
         var standardized = normalized.EndsWith("_pdv")
@@ -145,15 +156,15 @@ public sealed class CentralProfile
             || normalized.Contains("forca-de-vendas", StringComparison.Ordinal);
         if (!standardized) return null;
         var wcf = normalized.Contains("wcf_fvan", StringComparison.Ordinal);
-        return new
-        {
-            @base = "main",
-            integration = "pre_main",
-            pull_before_start = wcf || normalized.Contains("modulo_especifico", StringComparison.Ordinal),
-            restore_nuget = wcf,
-            no_binary_commit = true
-        };
+        return new RepositoryStandard(
+            "main",
+            "pre_main",
+            wcf || normalized.Contains("modulo_especifico", StringComparison.Ordinal),
+            wcf,
+            true);
     }
 
-    private sealed record RepositoryInfo(string Id, string Name, string Path, bool Default, object? Standard);
 }
+
+public sealed record CentralRepository(string Id, string Name, string Path, bool Default, RepositoryStandard? Standard);
+public sealed record RepositoryStandard(string Base, string Integration, bool PullBeforeStart, bool RestoreNuget, bool NoBinaryCommit);

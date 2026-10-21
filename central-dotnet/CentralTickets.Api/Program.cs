@@ -1,28 +1,58 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Http.Features;
 using CentralTickets.Api;
 
 var builder = WebApplication.CreateBuilder(args);
 var port = int.TryParse(Environment.GetEnvironmentVariable("CENTRAL_TICKETS_DOTNET_PORT"), out var configuredPort)
     ? configuredPort
-    : 17862;
+    : 17861;
 builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
 
 var dataRoot = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_DATA_ROOT")
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CentralTicketsClaude");
 var defaultStateRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "ticket-state");
 var defaultReferenceRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Claude Referencias", "Ref Dev");
+var defaultWorktreesRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "erp-worktrees");
 var stateBaseRoot = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_STATE_ROOT") ?? ConfiguredPath("state_base_root", defaultStateRoot);
 var referenceRoot = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_REFERENCES_ROOT") ?? ConfiguredPath("references_root", defaultReferenceRoot);
+var worktreesBaseRoot = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_WORKTREES_ROOT") ?? ConfiguredPath("worktrees_base_root", defaultWorktreesRoot);
 
 var accessToken = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_DOTNET_TOKEN")
     ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
 builder.Services.AddSingleton(new LocalAccess(accessToken));
 builder.Services.AddHttpClient();
-builder.Services.AddSingleton(new CentralProfile(dataRoot));
+builder.Services.AddHttpClient("azure", client => client.Timeout = TimeSpan.FromSeconds(30));
+var profile = new CentralProfile(dataRoot);
+builder.Services.AddSingleton(profile);
 builder.Services.AddSingleton(new TicketCatalog(dataRoot, stateBaseRoot, referenceRoot));
+builder.Services.AddSingleton(new TicketWriter(dataRoot, stateBaseRoot, profile));
+builder.Services.AddSingleton(new GitWorktreeService(dataRoot, stateBaseRoot, worktreesBaseRoot, profile));
+builder.Services.AddSingleton<SessionService>(services => new(dataRoot, profile, services.GetRequiredService<GitWorktreeService>()));
+builder.Services.AddSingleton<AzureDevOpsClient>(services => new(
+    dataRoot, referenceRoot, profile, services.GetRequiredService<TicketWriter>(), services.GetRequiredService<IHttpClientFactory>()));
+builder.Services.AddSingleton<AiMemoryService>(services => new(dataRoot, profile, services.GetRequiredService<IHttpClientFactory>()));
+builder.Services.AddSingleton<UsageService>();
+builder.Services.AddSingleton<CentralEventHub>();
+builder.Services.AddHostedService(services => services.GetRequiredService<CentralEventHub>());
 
 var app = builder.Build();
+app.Use(async (context, next) =>
+{
+    try { await next(); }
+    catch (TicketOperationException error)
+    {
+        context.Response.StatusCode = error.StatusCode;
+        await context.Response.WriteAsJsonAsync(new { error = error.Message });
+    }
+    catch (BadHttpRequestException error)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsJsonAsync(new { error = error.Message });
+    }
+});
 app.Use(async (context, next) =>
 {
     context.Response.Headers.XContentTypeOptions = "nosniff";
@@ -70,6 +100,15 @@ app.Use(async (context, next) =>
         return;
     }
 
+    if (HttpMethods.IsPost(context.Request.Method)
+        && (!string.Equals(context.Request.Headers.Origin, $"http://{context.Request.Host}", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(context.Request.Headers["X-Central-Request"], "1", StringComparison.Ordinal)))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new { error = "Solicitação de outra página bloqueada." });
+        return;
+    }
+
     await next();
 });
 app.UseStaticFiles();
@@ -99,6 +138,8 @@ app.MapGet("/tickets/{id}", (string id, TicketCatalog catalog) =>
         : Results.Content(TicketPageRenderer.Details(ticket), "text/html; charset=utf-8");
 });
 
+app.MapGet("/usage", () => Results.Content(TicketPageRenderer.Usage(), "text/html; charset=utf-8"));
+
 app.MapGet("/api/tickets", (HttpRequest request, TicketCatalog catalog) =>
 {
     var tickets = catalog.List(
@@ -112,6 +153,127 @@ app.MapGet("/api/tickets", (HttpRequest request, TicketCatalog catalog) =>
 
 app.MapGet("/api/tickets/{id}", (string id, TicketCatalog catalog) =>
     catalog.GetDetails(id) is { } ticket ? Results.Ok(ticket) : Results.NotFound(new { error = "Ticket não encontrado." }));
+
+app.MapPost("/api/tickets", (CreateTicketRequest input, TicketWriter writer) =>
+{
+    var created = writer.Create(input);
+    return Results.Json(created, statusCode: StatusCodes.Status201Created);
+});
+
+app.MapPost("/api/tickets/{id}/registration", (string id, RegistrationUpdate input, TicketWriter writer) =>
+{
+    var updated = writer.UpdateRegistration(id, input);
+    if (updated is null) return Results.NotFound(new { error = "Ticket não encontrado." });
+    var body = JsonNode.Parse(updated.Value.GetRawText()) as JsonObject ?? new JsonObject();
+    body["message"] = "Cadastro atualizado. Nenhuma sessão foi iniciada.";
+    return Results.Json(body);
+});
+
+app.MapPost("/api/tickets/{id}/complete", (string id, TicketWriter writer) => Results.Ok(writer.CompleteByUser(id)));
+app.MapPost("/api/tickets/{id}/attachments", async (string id, HttpRequest request, TicketCatalog catalog, TicketWriter writer, CancellationToken cancellationToken) =>
+{
+    var ticket = catalog.GetDetails(id);
+    if (ticket is null) return Results.NotFound(new { error = "Ticket não encontrado." });
+    var bodyLimit = request.HttpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
+    if (bodyLimit is { IsReadOnly: false }) bodyLimit.MaxRequestBodySize = 52L * 1024 * 1024;
+    var form = await request.ReadFormAsync(cancellationToken);
+    if (form.Files.Count is < 1 or > 40) throw new TicketOperationException("Selecione entre 1 e 40 arquivos.");
+    var directory = Path.GetFullPath(Path.Combine(referenceRoot, ticket.Id.ToLowerInvariant()));
+    if (!IsWithin(referenceRoot, directory)) throw new TicketOperationException("Pasta de anexos inválida.", 403);
+    Directory.CreateDirectory(directory);
+    long total = 0; var written = new List<string>(); var skipped = new List<string>();
+    foreach (var upload in form.Files)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var name = Path.GetFileName(upload.FileName);
+        if (string.IsNullOrWhiteSpace(name) || name != upload.FileName || name.Any(ch => ch < 32 || "<>:\"/\\|?*".Contains(ch))) throw new TicketOperationException("Nome de anexo inválido.");
+        total += upload.Length;
+        if (total > 50L * 1024 * 1024) throw new TicketOperationException("Os anexos ultrapassam o limite de 50 MB.", 413);
+        var target = Path.GetFullPath(Path.Combine(directory, name));
+        if (!IsWithin(directory, target)) throw new TicketOperationException("Arquivo de anexo fora da pasta permitida.", 403);
+        if (File.Exists(target)) { skipped.Add(name); continue; }
+        try
+        {
+            await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous);
+            await upload.CopyToAsync(output, cancellationToken);
+            written.Add(name);
+        }
+        catch (IOException) when (File.Exists(target)) { skipped.Add(name); }
+    }
+    if (written.Count > 0) writer.AddAttachments(ticket.Id, written);
+    var updated = catalog.GetDetails(ticket.Id);
+    return Results.Json(new { attachments = updated?.AttachmentInfo, message = $"{written.Count} anexo(s) adicionado(s){(skipped.Count > 0 ? $"; {skipped.Count} existente(s) preservado(s)" : "")}." }, statusCode: StatusCodes.Status201Created);
+}).DisableAntiforgery();
+app.MapGet("/api/tickets/{id}/content", (string id, string? kind, TicketCatalog catalog) =>
+{
+    var ticket = catalog.GetDetails(id);
+    if (ticket is null) return Results.NotFound(new { error = "Ticket não encontrado." });
+    if (kind is not ("plan" or "input")) throw new TicketOperationException("Conteúdo inválido.");
+    var file = kind == "plan"
+        ? Path.Combine(stateBaseRoot, ticket.RepositoryId ?? Path.GetFileName(ticket.Repository), ticket.Id.ToLowerInvariant(), "escopo.md")
+        : Path.Combine(dataRoot, "tickets", ticket.Id.ToLowerInvariant(), "entrada.md");
+    var root = kind == "plan" ? stateBaseRoot : dataRoot;
+    if (!IsWithin(root, file)) throw new TicketOperationException("Arquivo fora da pasta do ticket.", 403);
+    var content = File.Exists(file) ? File.ReadAllText(file) : null;
+    var text = content is not null ? content[..Math.Min(150_000, content.Length)] : kind == "input" ? ticket.Scope : null;
+    return Results.Ok(new { text });
+});
+app.MapPost("/api/tickets/{id}/prepare", async (string id, GitWorktreeService worktrees, CancellationToken cancellationToken) =>
+    Results.Ok(await worktrees.Prepare(id, cancellationToken)));
+app.MapGet("/api/tickets/{id}/preflight", async (string id, GitWorktreeService worktrees, CancellationToken cancellationToken) =>
+    Results.Ok(await worktrees.Preflight(id, cancellationToken)));
+app.MapGet("/api/tickets/{id}/diff", async (string id, GitWorktreeService worktrees, CancellationToken cancellationToken) =>
+    Results.Ok(await worktrees.Diff(id, cancellationToken)));
+app.MapPost("/api/tickets/{id}/memory-sync", async (string id, TicketCatalog catalog, AiMemoryService memory, CancellationToken cancellationToken) =>
+{
+    var ticket = catalog.GetDetails(id);
+    return ticket is null ? Results.NotFound(new { error = "Ticket não encontrado." }) : Results.Ok(await memory.SyncTicket(ticket, cancellationToken));
+});
+app.MapPost("/api/tickets/{id}/start", async (string id, SessionService sessions, CancellationToken cancellationToken) =>
+    Results.Ok(await sessions.Start(id, cancellationToken)));
+app.MapPost("/api/tickets/{id}/focus", (string id, SessionService sessions) => Results.Ok(sessions.Focus(id)));
+app.MapGet("/api/tickets/{id}/metrics", (string id, TicketCatalog catalog) =>
+{
+    var ticket = catalog.GetDetails(id);
+    if (ticket is null) return Results.NotFound(new { error = "Ticket não encontrado." });
+    var file = Path.Combine(dataRoot, "tickets", ticket.Id.ToLowerInvariant(), "metrics.json");
+    JsonNode metrics;
+    try { metrics = JsonNode.Parse(File.ReadAllText(file)) ?? new JsonObject(); }
+    catch (IOException) { metrics = new JsonObject(); }
+    catch (JsonException) { metrics = new JsonObject { ["error"] = "metrics.json inválido; arquivo preservado." }; }
+    return Results.Ok(new { ticket = ticket.Id, stage = ticket.Stage, metrics });
+});
+app.MapPost("/api/tickets/{id}/open", (string id, OpenTargetRequest input, TicketCatalog catalog) =>
+{
+    if (!OperatingSystem.IsWindows()) throw new TicketOperationException("Abrir caminhos locais é suportado somente no Windows.", 501);
+    var ticket = catalog.GetDetails(id);
+    if (ticket is null) return Results.NotFound(new { error = "Ticket não encontrado." });
+    string target;
+    if (input.Kind == "references")
+    {
+        target = Path.GetFullPath(Path.Combine(referenceRoot, ticket.Id.ToLowerInvariant()));
+        if (!IsWithin(referenceRoot, target)) throw new TicketOperationException("Pasta de anexos inválida.", 403);
+        Directory.CreateDirectory(target);
+    }
+    else if (input.Kind == "worktree")
+    {
+        if (string.IsNullOrWhiteSpace(ticket.Worktree) || !Directory.Exists(ticket.Worktree)) throw new TicketOperationException("A worktree ainda não existe.", 404);
+        target = Path.GetFullPath(ticket.Worktree);
+    }
+    else if (input.Kind == "document")
+    {
+        var documentsRoot = ConfiguredPath("documents_root", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Claude Referencias", "doc dev"));
+        target = Path.GetFullPath(Path.Combine(documentsRoot, ticket.Id.ToLowerInvariant()));
+        if (!IsWithin(documentsRoot, target) || !Directory.Exists(target)) throw new TicketOperationException("A pasta do documento ainda não existe.", 404);
+        var docs = Directory.EnumerateFiles(target, "*.docx").Where(file => !Path.GetFileName(file).StartsWith("~$", StringComparison.Ordinal)).ToArray();
+        if (docs.Length == 1) target = docs[0];
+    }
+    else throw new TicketOperationException("Ação de abertura inválida.");
+    var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false, CreateNoWindow = true };
+    start.ArgumentList.Add(target);
+    _ = Process.Start(start) ?? throw new TicketOperationException("Não foi possível abrir o caminho no Windows.", 500);
+    return Results.Ok(new { message = "Aberto no Windows." });
+});
 
 app.MapGet("/api/dashboard", (HttpRequest request, TicketCatalog catalog) =>
 {
@@ -130,9 +292,43 @@ app.MapGet("/api/dashboard", (HttpRequest request, TicketCatalog catalog) =>
 });
 
 app.MapGet("/api/stats", (TicketCatalog catalog) => Results.Ok(TicketCatalog.Stats(catalog.List("all", null, null, null, 500))));
+app.MapGet("/api/usage", (UsageService usage) => Results.Ok(usage.ReadClaude()));
+app.MapGet("/api/usage/codex", async (UsageService usage, CancellationToken cancellationToken) => Results.Ok(await usage.ReadCodex(cancellationToken)));
+app.MapGet("/api/stream", async (HttpContext context, CentralEventHub hub) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    context.Response.Headers["X-Accel-Buffering"] = "no";
+    context.Response.ContentType = "text/event-stream; charset=utf-8";
+    await context.Response.StartAsync(context.RequestAborted);
+    await using var subscription = hub.Subscribe();
+    await context.Response.WriteAsync("event: ready\ndata: {}\n\n", context.RequestAborted);
+    await context.Response.Body.FlushAsync(context.RequestAborted);
+    try
+    {
+        await foreach (var item in subscription.Reader.ReadAllAsync(context.RequestAborted))
+        {
+            await context.Response.WriteAsync($"event: {item.Name}\ndata: {item.Data.ToJsonString()}\n\n", context.RequestAborted);
+            await context.Response.Body.FlushAsync(context.RequestAborted);
+        }
+    }
+    catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
+});
+app.MapPost("/api/memory-sync", async (JsonElement _, TicketCatalog catalog, AiMemoryService memory, CancellationToken cancellationToken) =>
+    Results.Ok(await memory.SyncDelivered(catalog, cancellationToken)));
 
 app.MapGet("/api/profile", async (CentralProfile profile, IHttpClientFactory clientFactory, CancellationToken cancellationToken) =>
     Results.Ok(await profile.GetAsync(clientFactory, cancellationToken)));
+
+app.MapGet("/api/azure/status", (AzureDevOpsClient azure) => Results.Ok(azure.Status()));
+app.MapPost("/api/azure/configure", async (AzurePatRequest input, AzureDevOpsClient azure, CancellationToken cancellationToken) =>
+    Results.Ok(await azure.Configure(input.Pat, cancellationToken)));
+app.MapPost("/api/azure/preview", async (AzurePreviewRequest input, AzureDevOpsClient azure, CancellationToken cancellationToken) =>
+    Results.Ok(await azure.Preview(input.Reference, cancellationToken)));
+app.MapPost("/api/azure/import", async (AzureImportRequest input, AzureDevOpsClient azure, CancellationToken cancellationToken) =>
+{
+    var result = await azure.Import(input, cancellationToken);
+    return Results.Json(result, statusCode: result.Warnings.Count == 0 ? StatusCodes.Status201Created : 207);
+});
 
 var launchFile = Path.Combine(dataRoot, "launch-dotnet.json");
 Directory.CreateDirectory(dataRoot);
@@ -150,6 +346,15 @@ app.Lifetime.ApplicationStopping.Register(() =>
 });
 
 app.Run();
+
+static bool IsWithin(string root, string target)
+{
+    var basePath = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    var fullPath = Path.GetFullPath(target);
+    return fullPath.Equals(basePath, StringComparison.OrdinalIgnoreCase)
+        || fullPath.StartsWith(basePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+        || fullPath.StartsWith(basePath + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+}
 
 string ConfiguredPath(string property, string fallback)
 {
@@ -169,3 +374,4 @@ string ConfiguredPath(string property, string fallback)
 }
 
 public partial class Program;
+public sealed record OpenTargetRequest(string Kind);

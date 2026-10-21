@@ -1,15 +1,15 @@
+param([switch]$Recompilar, [switch]$SomenteServidor)
 $ErrorActionPreference = 'Stop'
 
 $appRoot = $PSScriptRoot
-$projectFile = Join-Path $appRoot 'central-dotnet\CentralTickets.Api\CentralTickets.Api.csproj'
 $dataRoot = Join-Path $env:LOCALAPPDATA 'CentralTicketsClaude'
 $launchFile = Join-Path $dataRoot 'launch-dotnet.json'
 $logOut = Join-Path $dataRoot 'server-dotnet.log'
 $logErr = Join-Path $dataRoot 'server-dotnet-error.log'
-$port = 17862
+$port = 17861
 $baseUrl = "http://127.0.0.1:$port"
 
-if (-not (Test-Path -LiteralPath $projectFile)) { throw 'Projeto C# da Central não encontrado.' }
+if (-not (Test-Path -LiteralPath (Join-Path $appRoot 'central-dotnet\CentralTickets.Api\CentralTickets.Api.csproj'))) { throw 'Projeto C# da Central não encontrado.' }
 if (-not (Get-Command dotnet.exe -ErrorAction SilentlyContinue)) { throw 'Instale o SDK .NET 10 antes de iniciar a versão C#.' }
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
 
@@ -31,9 +31,23 @@ if (-not $launch) {
     }
 
     $dotnet = (Get-Command dotnet.exe).Source
+    $apiDll = Join-Path $appRoot 'central-dotnet\CentralTickets.Api\bin\Release\net10.0\CentralTickets.Api.dll'
+    $apiDirectory = Join-Path $appRoot 'central-dotnet\CentralTickets.Api'
+    $requiredBinaries = @(
+        $apiDll,
+        (Join-Path $appRoot 'central-dotnet\CentralTickets.Hook\bin\Release\net10.0\CentralTickets.Hook.dll'),
+        (Join-Path $appRoot 'central-dotnet\CentralTickets.ComputerMcp\bin\Release\net10.0-windows\CentralTickets.ComputerMcp.dll'),
+        (Join-Path $appRoot 'central-dotnet\CentralTickets.UsageCollector\bin\Release\net10.0\CentralTickets.UsageCollector.dll'),
+        (Join-Path $appRoot 'central-dotnet\CentralTickets.SessionRunner\bin\Release\net10.0\CentralTickets.SessionRunner.dll')
+    )
+    if ($Recompilar -or @($requiredBinaries | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0) {
+        $solution = Join-Path $appRoot 'CentralTickets.DotNet.sln'
+        & $dotnet build $solution --configuration Release --nologo
+        if ($LASTEXITCODE -ne 0) { throw "Falha ao compilar $solution. A Central não foi iniciada." }
+    }
     $process = Start-Process -FilePath $dotnet `
-        -ArgumentList @('run', '--no-launch-profile', '--project', "`"$projectFile`"") `
-        -WorkingDirectory $appRoot -WindowStyle Hidden -PassThru `
+        -ArgumentList @("`"$apiDll`"") `
+        -WorkingDirectory $apiDirectory -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $logOut -RedirectStandardError $logErr
 
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -46,4 +60,4 @@ if (-not $launch) {
     if (-not $launch) { throw "Não foi possível iniciar a API C#. Consulte $logErr" }
 }
 
-Start-Process -FilePath "$baseUrl/bootstrap?token=$($launch.token)"
+if (-not $SomenteServidor) { Start-Process -FilePath "$baseUrl/bootstrap?token=$($launch.token)" }

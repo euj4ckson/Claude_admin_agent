@@ -1,7 +1,3 @@
-node_modules/
 *.log
-central/.test-data/
-central/.qa/
-central/.qa-launch.json
 central-dotnet/**/bin/
 central-dotnet/**/obj/

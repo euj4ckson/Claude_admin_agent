@@ -1,34 +1,34 @@
-# Migração da Central para C#/.NET
+# Cutover da Central para C#/.NET
 
-Objetivo: substituir a Central Node por uma aplicação ASP.NET Core com paridade funcional, preservando os formatos de dados e os controles de segurança. Até todos os itens abaixo serem concluídos e validados, Node continua sendo a aplicação operacional; a tela C# não deve ser apresentada como substituta.
+Em 21/10/2026, a aplicação principal passou a ser a implementação C#/.NET 10. A interface permanece local e usa os dados JSON existentes; não há conversão em massa nem mudança de formato dos cadastros.
 
-## Matriz de paridade
+## Componentes ativos
 
-| Área | Fluxo existente | Situação C# | Critério para considerar migrado |
-|---|---|---|---|
-| Inicialização e configuração | perfil local, caminhos, executáveis, repositórios | Parcial | localizar perfil, validar diretórios e mostrar diagnóstico equivalente |
-| Tickets | listar, filtrar, criar, editar cadastro, concluir manualmente | Listagem/detalhe parciais | operações compatíveis, gravação atômica e testes de conflito/recuperação |
-| Azure DevOps | PAT protegido por DPAPI, consulta, prévia, anexos e importação | Ausente | preview sem escrita, PAT protegido, importação confirmada e limites de anexos testados |
-| Worktrees e Git | preparar/reutilizar worktree, branches, componentes, diff | Ausente | diário de preparação recuperável, validação de caminhos e nenhuma sobrescrita |
-| Sessões de agentes | iniciar, retomar, anexar, focar, estado/heartbeat e locks | Ausente | Claude e Codex operam sem duplicar sessão e locks órfãos são recuperados com segurança |
-| Política e aprovação | hooks, hash do plano/orçamento, arquivos permitidos, comandos e recursos | Ausente | mesma decisão de allow/deny para casos aprovados, negados e concorrentes |
-| Evidências e entrega | matriz, manifesto, gates de commit/entrega, conclusão manual | Ausente/parcial | qualidade é calculada a partir dos arquivos reais; nunca confiar só no estado declarado |
-| Anexos e documentos | upload, abrir referências/worktree/documento, conteúdo do escopo | Parcial | limites, contenção de caminhos, escaping e UX equivalente |
-| Métricas e uso | tokens, fases, revisões, bloqueios, Claude/Codex, SSE | Ausente | origem e precisão preservadas; atualização e reconexão testadas |
-| AI Memory | geração sanitizada, sincronização e outbox/retry | Ausente | idempotência, falha remota e fila local cobertas por testes |
-| Interface | navegação, ações, formulários, detalhes, filtros, gráficos, estados vazios | Somente leitura | todo fluxo executável na interface C#, sem depender do servidor Node |
-| Instalação e operação | atalhos Windows, execução oculta, logs, shutdown e atualização | Parcial | instalação limpa em Windows e execução sem janela de terminal validadas |
+| Projeto | Responsabilidade |
+|---|---|
+| `CentralTickets.Api` | API local, páginas, importação Azure, tickets, worktrees, métricas, AI Memory e eventos |
+| `CentralTickets.Hook` | Eventos e políticas das sessões Claude |
+| `CentralTickets.SessionRunner` | Reserva, inicialização, heartbeat e encerramento das sessões Claude/Codex |
+| `CentralTickets.ComputerMcp` | Captura de tela e interação para evidências visuais no Windows |
+| `CentralTickets.UsageCollector` | Registro dos limites do Claude fornecidos pela status line |
+| `CentralTickets.Plugin` | Manifesto do plugin Claude, chamando o hook compilado em .NET |
+| `CentralTickets.Api.Tests` | Testes de domínio e integração |
 
-## Ordem de migração
+## Verificações feitas
 
-1. Paridade de domínio e operações locais de ticket, ainda sem iniciar agentes.
-2. Azure, configuração e anexos, com segredos protegidos pelo Windows.
-3. Preparação de worktrees, lançamento/retomada de agentes e recuperação de locks.
-4. Portar a política dos hooks e os gates de qualidade; manter adaptadores só onde a ferramenta externa exigir Node.
-5. Métricas, limites de uso, eventos em tempo real e AI Memory.
-6. Interface completa, testes integrados e testes de regressão contra fixtures do formato Node.
-7. Cutover: executar a suíte completa, documentar contingência, migrar o atalho padrão para C# e só então retirar o servidor Node do fluxo normal.
+- Todos os seis projetos estão na solução `CentralTickets.DotNet.sln`.
+- Build Release da solução sem warnings/erros.
+- Suíte automatizada com 37 testes aprovados.
+- Smoke test isolado de inicialização, autenticação local, home, estatísticas e CSS.
+- Launcher principal usa a porta 17861 e só compila quando os binários faltam ou quando solicitado.
+- Os hooks do plugin C# não dependem do runtime Node.
 
-## Regra de cutover
+## Operação e limites
 
-Não migrar nem reescrever dados dos tickets como parte do cutover. As duas versões devem ler os mesmos JSONs durante a transição. Nunca executar os dois servidores como donos de um mesmo fluxo de escrita ou iniciar duas sessões para o mesmo ticket. O Node só deixa de ser a Central padrão quando todos os critérios da matriz estiverem implementados e aprovados por testes de integração e regressão.
+Use `instalar-central.cmd` para preparar o .NET e criar o atalho. A instância local escuta apenas em `127.0.0.1:17861`. O bootstrap cria cookie local `HttpOnly`; requisições de escrita também validam origem e cabeçalho.
+
+Claude Code e Codex CLI são ferramentas externas, instaladas e autenticadas separadamente. O uso interativo deve ser validado no computador de destino. A Central não faz push, merge ou PR. Mantenha os dados existentes e as worktrees; não apague arquivos de usuário durante instalação ou atualização.
+
+## Dados legados
+
+Cadastros, estados, anexos, métricas e documentos continuam nos diretórios locais já configurados. O cutover não os reescreve. Os módulos Node usados pela antiga aplicação foram removidos; referências a npm/Node nas integrações referem-se apenas aos caminhos pelos quais os CLIs externos podem ter sido instalados, não à stack da Central.
