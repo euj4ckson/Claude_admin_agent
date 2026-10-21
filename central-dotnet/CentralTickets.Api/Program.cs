@@ -18,6 +18,8 @@ var referenceRoot = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_REFERENC
 var accessToken = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_DOTNET_TOKEN")
     ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
 builder.Services.AddSingleton(new LocalAccess(accessToken));
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton(new CentralProfile(dataRoot));
 builder.Services.AddSingleton(new TicketCatalog(dataRoot, stateBaseRoot, referenceRoot));
 
 var app = builder.Build();
@@ -128,6 +130,9 @@ app.MapGet("/api/dashboard", (HttpRequest request, TicketCatalog catalog) =>
 });
 
 app.MapGet("/api/stats", (TicketCatalog catalog) => Results.Ok(TicketCatalog.Stats(catalog.List("all", null, null, null, 500))));
+
+app.MapGet("/api/profile", async (CentralProfile profile, IHttpClientFactory clientFactory, CancellationToken cancellationToken) =>
+    Results.Ok(await profile.GetAsync(clientFactory, cancellationToken)));
 
 var launchFile = Path.Combine(dataRoot, "launch-dotnet.json");
 Directory.CreateDirectory(dataRoot);
