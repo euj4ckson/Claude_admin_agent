@@ -101,6 +101,7 @@ public sealed class SessionRunnerIntegrationTests : IDisposable
         });
         WriteJson(Path.Combine(claudeDir, "runtime.json"), new JsonObject { ["runId"] = claudeRun, ["phase"] = "running", ["startedAt"] = DateTimeOffset.UtcNow.ToString("O") });
         WriteJson(Path.Combine(claudeDir, "active.lock"), new JsonObject { ["runId"] = claudeRun });
+        File.WriteAllText(Path.Combine(claudeDir, "metrics.json"), "{}");
         WriteJson(Path.Combine(claudeState, "estado.json"), new JsonObject { ["ticket"] = "GER5902", ["stage"] = "analise", ["scope_revision"] = 1 });
         var hookDll = Path.Combine(hookDir, "CentralTickets.Hook.dll");
         using var hookProcess = StartHook(hookDll, data, "GER5902", claudeRun);

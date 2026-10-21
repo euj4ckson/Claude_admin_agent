@@ -30,7 +30,7 @@ Em 21/10/2026, a aplicação principal passou a ser a implementação C#/.NET 10
 
 ## Paridade das operações
 
-O hook Claude preserva os identificadores de sessão anteriores e aceita o identificador novo emitido ao iniciar uma conversa gerenciada; o teste de regressão confirma que a lista JSON existente é atualizada sem reutilizar um nó já associado.
+O hook Claude preserva identificadores de sessão e inicializa contadores quando `metrics.json` existe vazio (`{}`), sem reutilizar um nó JSON já associado. O teste integrado executa `SessionStart` e `UserPromptSubmit` pelo assembly .NET.
 
 As operações do servidor antigo foram migradas para endpoints ASP.NET Core. As telas principais agora são servidas pela aplicação C#, e os recursos do painel continuam disponíveis:
 

@@ -161,7 +161,16 @@ public sealed class HookProcessor(string dataRoot)
         var at = DateTimeOffset.UtcNow.ToString("O");
         var phase = Phase(GetString(state, "stage"));
         if (metrics["phases"] is not JsonObject phases) metrics["phases"] = phases = new JsonObject();
-        if (metrics["totals"] is not JsonObject totals) metrics["totals"] = totals = EmptyMetrics(id)["totals"]!.AsObject();
+        if (metrics["totals"] is not JsonObject totals)
+        {
+            totals = new JsonObject
+            {
+                ["estimated_input_tokens"] = 0, ["estimated_output_tokens"] = 0,
+                ["reported_input_tokens"] = 0, ["reported_output_tokens"] = 0,
+                ["tool_calls"] = 0, ["prompts"] = 0, ["failures"] = 0, ["turns"] = 0
+            };
+            metrics["totals"] = totals;
+        }
         var previous = GetString(metrics, "last_stage");
         var previousPhase = previous is null ? null : Phase(previous);
         if (GetString(metrics, "started_at") is null) metrics["started_at"] = at;

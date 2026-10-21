@@ -16,6 +16,6 @@ Data da verificação: 21/10/2026.
 - Os testes cobrem importação do perfil local, preservação/idempotência de `config.json` e permissões MCP/negação de push da sessão.
 - O runner Codex registra `SessionStart`/`SessionEnd` pelo hook .NET; o encerramento sincroniza o aprendizado e preserva a fila local se o AI Memory estiver indisponível.
 - O hook Claude aponta para o assembly .NET; o manifesto do plugin não chama runtime Node.
-- A atualização do `sessionId` no `SessionStart` foi testada com um ID novo em sessão gerenciada; o hook preserva a lista `sessionIds` sem erro de nó JSON já associado.
+- O hook foi testado com `metrics.json` vazio (`{}`), como no ticket FVA0351: `SessionStart` e `UserPromptSubmit` retornam código 0, o contador de prompts é gravado e o status final registra o evento; também valida a atualização de `sessionId` sem erro de nó JSON já associado.
 
 Ainda é necessário validar o fluxo interativo Claude/Codex com as instalações e autenticações de cada computador. Não iniciar uma sessão de ticket real apenas como teste de instalação.
