@@ -2,6 +2,22 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CentralTickets.Api;
 
+if (args.Length == 4 && args[0] == "--managed-session-event")
+{
+    var root = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_DATA");
+    if (string.IsNullOrWhiteSpace(root)) { Console.Error.WriteLine("Central: diretÃ³rio local de dados ausente."); return 2; }
+    try
+    {
+        await new HookProcessor(root).HandleCodexSessionEventAsync(args[1], args[2], args[3]);
+        return 0;
+    }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine($"Central: {error.Message}");
+        return 2;
+    }
+}
+
 JsonObject input;
 try
 {

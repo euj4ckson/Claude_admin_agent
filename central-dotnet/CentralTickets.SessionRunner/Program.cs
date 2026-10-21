@@ -75,6 +75,7 @@ try
     runtime["phase"] = "running"; runtime["pid"] = Environment.ProcessId; runtime["childPid"] = child.Id; runtime["heartbeat"] = DateTimeOffset.UtcNow.ToString("O");
     WriteJson(runtimeFile, runtime);
     WriteJson(lockFile, new JsonObject { ["runId"] = runId, ["pid"] = Environment.ProcessId, ["childPid"] = child.Id });
+    if (agent == "codex") await ReportCodexSessionEvent(dataRoot, id, runId, "SessionStart");
     using var heartbeat = new PeriodicTimer(TimeSpan.FromSeconds(3));
     var wait = child.WaitForExitAsync();
     while (!wait.IsCompleted && await heartbeat.WaitForNextTickAsync())
@@ -82,6 +83,7 @@ try
         runtime["heartbeat"] = DateTimeOffset.UtcNow.ToString("O"); WriteJson(runtimeFile, runtime);
     }
     await wait;
+    if (agent == "codex") await ReportCodexSessionEvent(dataRoot, id, runId, "SessionEnd");
     runtime["phase"] = child.ExitCode == 0 ? "stopped" : "error";
     runtime["exitCode"] = child.ExitCode; runtime["endedAt"] = DateTimeOffset.UtcNow.ToString("O");
     if (child.ExitCode != 0) runtime["error"] = $"O agente encerrou com código {child.ExitCode}.";
@@ -147,4 +149,27 @@ static async Task<string?> FindBackgroundSession(string executable, string sessi
     }
     catch (Exception error) when (error is IOException or JsonException or OperationCanceledException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
     return null;
+}
+static async Task ReportCodexSessionEvent(string dataRoot, string ticketId, string runId, string eventName)
+{
+    try
+    {
+        var config = Read(Path.Combine(dataRoot, "config.json"));
+        var appRoot = config?["appRoot"]?.GetValue<string>() ?? "";
+        var hook = Path.Combine(appRoot, "central-dotnet", "CentralTickets.Hook", "bin", "Release", "net10.0", "CentralTickets.Hook.dll");
+        if (!File.Exists(hook)) hook = Path.Combine(appRoot, "central-dotnet", "CentralTickets.Hook", "bin", "Debug", "net10.0", "CentralTickets.Hook.dll");
+        if (!File.Exists(hook)) throw new InvalidOperationException("Hook .NET ausente; execute instalar-central.cmd.");
+        var dotnet = config?["dotnet"]?.GetValue<string>() ?? "dotnet";
+        var start = new ProcessStartInfo(dotnet) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+        foreach (var argument in new[] { hook, "--managed-session-event", ticketId, runId, eventName }) start.ArgumentList.Add(argument);
+        start.Environment["CENTRAL_TICKETS_DATA"] = dataRoot;
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("O hook .NET nÃ£o iniciou.");
+        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? $"Hook encerrou com cÃ³digo {process.ExitCode}." : error.Trim());
+    }
+    catch (Exception error) when (error is IOException or InvalidOperationException or JsonException or System.ComponentModel.Win32Exception)
+    {
+        Console.Error.WriteLine($"Central: nÃ£o foi possÃ­vel registrar {eventName} do Codex; sessÃ£o preservada ({error.Message}).");
+    }
 }

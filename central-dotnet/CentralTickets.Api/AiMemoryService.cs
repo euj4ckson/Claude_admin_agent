@@ -126,14 +126,16 @@ public sealed class AiMemoryService(string dataRoot, CentralProfile profile, IHt
     private static JsonObject CreateLearning(TicketDetails ticket, JsonObject state)
     {
         var review = state["review"] as JsonObject ?? new JsonObject();
+        var metrics = ticket.Metrics is null ? new JsonObject() : JsonSerializer.SerializeToNode(ticket.Metrics) as JsonObject ?? new JsonObject();
         return new JsonObject
         {
             ["id"] = Guid.NewGuid().ToString("N"), ["at"] = DateTimeOffset.UtcNow.ToString("O"), ["source"] = "central-tickets",
             ["ticket"] = ticket.Id, ["repository"] = ticket.RepositoryId, ["title"] = Redact(ticket.Title),
             ["verdict"] = Redact(GetString(review, "verdict") ?? GetString(review, "resultado") ?? ""),
             ["confirmed"] = SafeList(review["confirmed"]), ["escaped_findings"] = SafeList(review["suspected"] ?? review["findings"]),
-            ["scope_expansions"] = 0, ["tests_not_executed"] = (state["tests"] as JsonArray ?? []).Count(item => Regex.IsMatch(item?.ToJsonString() ?? "", "nao executado|não executado|not run", RegexOptions.IgnoreCase)),
-            ["quality"] = new JsonObject { ["commit_ready"] = false, ["delivery_ready"] = false }
+            ["scope_expansions"] = GetInt(metrics, "scope_expansions"),
+            ["tests_not_executed"] = GetInt(metrics, "tests_not_executed"),
+            ["quality"] = new JsonObject { ["commit_ready"] = ticket.Quality.CommitReady, ["delivery_ready"] = ticket.Quality.DeliveryReady }
         };
     }
 
@@ -143,6 +145,8 @@ public sealed class AiMemoryService(string dataRoot, CentralProfile profile, IHt
         if (!Regex.IsMatch(ticket, "^[A-Z0-9_-]{1,40}$")) throw new InvalidOperationException("Identificador de ticket invÃ¡lido para o AI Memory.");
         static string Bullets(JsonNode? value, string fallback) => value is JsonArray array && array.Count > 0 ? string.Join('\n', array.Select(item => "- " + Redact(item?.ToString() ?? ""))) : "- " + fallback;
         var body = $"# {ticket} â€” {Redact(GetString(learning, "title") ?? "Aprendizado da Central")}\n\n- Origem: Central de Tickets ({Redact(GetString(learning, "repository") ?? "repositÃ³rio nÃ£o informado")})\n- Atualizado em: {Redact(GetString(learning, "at") ?? DateTimeOffset.UtcNow.ToString("O"))}\n- RevisÃ£o: {Redact(GetString(learning, "verdict") ?? "sem conclusÃ£o registrada")}\n- ExpansÃµes de escopo: {learning["scope_expansions"]?.ToString() ?? "0"}\n- Testes nÃ£o executados: {learning["tests_not_executed"]?.ToString() ?? "0"}\n\n## EvidÃªncias confirmadas\n{Bullets(learning["confirmed"], "Nenhuma evidÃªncia confirmada registrada.")}\n\n## Achados que escaparam para revisÃ£o\n{Bullets(learning["escaped_findings"], "Nenhum achado registrado.")}";
+        var quality = learning["quality"] as JsonObject;
+        body += $"\n- Pronto para commit: {(quality?["commit_ready"]?.GetValue<bool>() == true ? "sim" : "nÃ£o")}; pronto para entrega: {(quality?["delivery_ready"]?.GetValue<bool>() == true ? "sim" : "nÃ£o")}";
         return ($"notes/central-tickets/{ticket.ToLowerInvariant()}.md", body);
     }
 
@@ -181,5 +185,6 @@ public sealed class AiMemoryService(string dataRoot, CentralProfile profile, IHt
     private static JsonArray SafeList(JsonNode? source) => source is JsonArray values ? new JsonArray(values.Take(12).Select(item => (JsonNode?)JsonValue.Create(Redact(item?.ToString() ?? ""))).ToArray()) : new JsonArray();
     private static string Redact(string text) { var safe = Regex.Replace(text ?? "", "(password|pwd|token|api[_-]?key|connectionstring)\\s*[=:]\\s*[^\\s;]+", "$1=[REDACTED]", RegexOptions.IgnoreCase); return safe[..Math.Min(4000, safe.Length)]; }
     private static string? GetString(JsonObject? obj, string key) => obj?[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+    private static int GetInt(JsonObject? obj, string key) => obj?[key] is JsonValue value && value.TryGetValue<int>(out var number) && number >= 0 ? number : 0;
     private static async Task AtomicWrite(string path, string content, CancellationToken cancellationToken) { var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp"; try { await File.WriteAllTextAsync(temp, content, new UTF8Encoding(false), cancellationToken); File.Move(temp, path, true); } finally { if (File.Exists(temp)) File.Delete(temp); } }
 }

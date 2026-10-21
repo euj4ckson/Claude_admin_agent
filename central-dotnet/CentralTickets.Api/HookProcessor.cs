@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace CentralTickets.Api;
 
@@ -9,6 +10,49 @@ public sealed class HookProcessor(string dataRoot)
 {
     private static readonly JsonSerializerOptions PrettyJson = new() { WriteIndented = true };
     private readonly string _root = dataRoot;
+
+    public async Task<JsonObject> HandleCodexSessionEventAsync(string ticketId, string runId, string eventName)
+    {
+        var id = ValidateId(ticketId);
+        if (eventName is not ("SessionStart" or "SessionEnd")) throw new InvalidDataException("Evento de sessÃ£o invÃ¡lido.");
+        var dir = Path.Combine(_root, "tickets", id.ToLowerInvariant());
+        var ticket = Read(Path.Combine(dir, "ticket.json")) ?? throw new InvalidDataException("ticket.json ausente ou invÃ¡lido.");
+        var runtime = Read(Path.Combine(dir, "runtime.json")) ?? throw new InvalidDataException("runtime.json ausente ou invÃ¡lido.");
+        var active = Read(Path.Combine(dir, "active.lock"));
+        if (!string.Equals(GetString(ticket, "agent"), "codex", StringComparison.OrdinalIgnoreCase)
+            || GetString(runtime, "runId") != runId
+            || GetString(active, "runId") != runId
+            || GetString(runtime, "phase") != "running")
+            throw new InvalidDataException("O evento nÃ£o corresponde a uma sessÃ£o Codex ativa deste ticket.");
+
+        var input = new JsonObject { ["hook_event_name"] = eventName, ["session_id"] = GetString(ticket, "sessionId") };
+        var metrics = RecordMetric(ticket, id, input, eventName);
+        AppendEvent(dir, "sessao", eventName == "SessionStart" ? "Codex conectado Ã  sessÃ£o deste ticket." : "SessÃ£o Codex encerrada; trabalho preservado.");
+        if (eventName == "SessionEnd")
+        {
+            try
+            {
+                var config = Read(Path.Combine(_root, "config.json"));
+                var stateRoot = GetString(config, "state_base_root") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "ticket-state");
+                var references = GetString(config, "references_root") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Claude Referencias", "Ref Dev");
+                var detail = new TicketCatalog(_root, stateRoot, references).GetDetails(id);
+                if (detail is not null)
+                {
+                    var memory = new AiMemoryService(_root, new CentralProfile(_root), new HookHttpClientFactory());
+                    var result = await memory.SyncTicket(detail, CancellationToken.None);
+                    var status = GetString(result, "remote") == "synced" ? "sincronizado" : "enfileirado";
+                    AppendEvent(dir, "memory", $"Aprendizado {status} para o AI Memory.");
+                }
+            }
+            catch (Exception error) { AppendEvent(dir, "memory", "Falha ao sincronizar aprendizado; trabalho preservado localmente: " + error.Message); }
+        }
+        WriteJson(Path.Combine(dir, "hook-status.json"), new JsonObject
+        {
+            ["event"] = eventName, ["at"] = DateTimeOffset.UtcNow.ToString("O"), ["sessionId"] = GetString(ticket, "sessionId"),
+            ["metrics"] = metrics["totals"]?.DeepClone()
+        });
+        return metrics;
+    }
 
     public async Task<JsonObject> HandleAsync(JsonObject input)
     {
@@ -237,6 +281,12 @@ public sealed class HookProcessor(string dataRoot)
         catch (JsonException) { throw new InvalidDataException($"Não foi possível ler {Path.GetFileName(path)}; arquivo preservado."); }
     }
     private static string? GetString(JsonObject? obj, string key) => obj?[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+    private static string ValidateId(string id)
+    {
+        var normalized = id.Trim().ToUpperInvariant();
+        if (!Regex.IsMatch(normalized, "^[A-Z]{2,8}[0-9]{2,8}$")) throw new InvalidDataException("Identificador de ticket invÃ¡lido.");
+        return normalized;
+    }
     private sealed class HookHttpClientFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();

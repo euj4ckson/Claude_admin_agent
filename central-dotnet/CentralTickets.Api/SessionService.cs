@@ -115,6 +115,9 @@ public sealed class SessionService(string dataRoot, CentralProfile profile, GitW
         if (!File.Exists(Path.Combine(pluginRoot, ".claude-plugin", "plugin.json"))
             || !File.Exists(Path.Combine(pluginRoot, "hooks", "hooks.json")))
             throw new TicketOperationException("Plugin de hooks C# não encontrado. Compile/instale a Central .NET antes de iniciar sessões.", 409);
+        var hookDll = Path.Combine(appRoot, "central-dotnet", "CentralTickets.Hook", "bin", "Release", "net10.0", "CentralTickets.Hook.dll");
+        if (!File.Exists(hookDll)) hookDll = Path.Combine(appRoot, "central-dotnet", "CentralTickets.Hook", "bin", "Debug", "net10.0", "CentralTickets.Hook.dll");
+        if (!File.Exists(hookDll)) throw new TicketOperationException("Hook C# nÃ£o compilado. Execute instalar-central.cmd antes de iniciar a sessÃ£o.", 409);
         var documentsRoot = _profile.GetString("documents_root");
         if (!string.IsNullOrWhiteSpace(documentsRoot)) Directory.CreateDirectory(Path.Combine(documentsRoot, id.ToLowerInvariant()));
         ticket["sessionId"] = sessionId;

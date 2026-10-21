@@ -115,6 +115,41 @@ public sealed class HookPolicyTests : IDisposable
         Assert.True(metrics["totals"]?["estimated_input_tokens"]?.GetValue<int>() > 0);
     }
 
+    [Fact]
+    public async Task Codex_session_lifecycle_records_metrics_and_queues_learning_on_end()
+    {
+        var ticketPath = Path.Combine(_data, "tickets", "ger5811", "ticket.json");
+        var ticket = JsonNode.Parse(File.ReadAllText(ticketPath))!.AsObject();
+        ticket["agent"] = "codex";
+        File.WriteAllText(ticketPath, ticket.ToJsonString());
+        var configPath = Path.Combine(_data, "config.json");
+        File.WriteAllText(configPath, "{\"repository\":\"" + _repo.Replace("\\", "\\\\") + "\",\"state_base_root\":\"" + _state.Replace("\\", "\\\\") + "\",\"ai_memory_url\":\"http://127.0.0.1:1\"}");
+        var processor = new HookProcessor(_data);
+
+        await processor.HandleCodexSessionEventAsync("GER5811", "run-hook-fixture", "SessionStart");
+        await processor.HandleCodexSessionEventAsync("GER5811", "run-hook-fixture", "SessionEnd");
+
+        var metrics = JsonNode.Parse(File.ReadAllText(Path.Combine(_data, "tickets", "ger5811", "metrics.json")))!;
+        Assert.NotNull(metrics["started_at"]);
+        Assert.NotNull(metrics["ended_at"]);
+        Assert.NotNull(metrics["phases"]?["outro"]?["ended_at"]);
+        Assert.Equal("queued", metrics["memory_sync"]?.AsArray().LastOrDefault()?["status"]?.GetValue<string>());
+        Assert.Contains("GER5811", File.ReadAllText(Path.Combine(_data, "ai-memory-outbox.jsonl")));
+    }
+
+    [Fact]
+    public async Task Codex_session_event_rejects_a_stale_run_reservation()
+    {
+        var ticketPath = Path.Combine(_data, "tickets", "ger5811", "ticket.json");
+        var ticket = JsonNode.Parse(File.ReadAllText(ticketPath))!.AsObject();
+        ticket["agent"] = "codex";
+        File.WriteAllText(ticketPath, ticket.ToJsonString());
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new HookProcessor(_data).HandleCodexSessionEventAsync("GER5811", "stale-run", "SessionStart"));
+        Assert.False(File.Exists(Path.Combine(_data, "tickets", "ger5811", "metrics.json")));
+    }
+
     private string ReadSessionId() => JsonNode.Parse(File.ReadAllText(Path.Combine(_data, "tickets", "ger5811", "ticket.json")))!["sessionId"]!.GetValue<string>();
 
     private static JsonObject Input(string tool, JsonObject args) => new() { ["tool_name"] = tool, ["tool_input"] = args };

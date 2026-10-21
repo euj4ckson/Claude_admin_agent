@@ -22,6 +22,10 @@ public sealed class AiMemoryServiceTests : IDisposable
 
         Assert.Equal("synced", result["remote"]?.GetValue<string>());
         Assert.Contains("notes/central-tickets/ger5811.md", handler.Body);
+        var sentBody = JsonNode.Parse(handler.Body)?["params"]?["arguments"]?["body"]?.GetValue<string>() ?? "";
+        Assert.Contains("escopo: 2", sentBody);
+        Assert.Contains("executados: 3", sentBody);
+        Assert.Contains("Pronto para commit: sim; pronto para entrega: sim", sentBody);
         Assert.DoesNotContain("password=hunter2", handler.Body);
         Assert.False(File.Exists(Path.Combine(_root, "ai-memory-outbox.jsonl")));
     }
@@ -48,7 +52,7 @@ public sealed class AiMemoryServiceTests : IDisposable
         null, null, false, null, [], null, null, null, "entregue", "Entregue", JsonDocument.Parse("{\"stage\":\"entregue\",\"review\":{\"verdict\":\"OK password=hunter2\"},\"tests\":[]}").RootElement,
         null, "none", null, null, [], new AttachmentDetails("", false, [], []),
         new RiskSummary("none", "Histórico de entrega", []),
-        new QualitySummary(true, true, [], new QualityCounts(0, 0, 0)), null);
+        new QualitySummary(true, true, [], new QualityCounts(0, 0, 0)), new { scope_expansions = 2, tests_not_executed = 3 });
 
     private static StringContent JsonContent(string content) => new(content, Encoding.UTF8, "application/json");
     public void Dispose() { try { Directory.Delete(_root, true); } catch (IOException) { } }
