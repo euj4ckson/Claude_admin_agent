@@ -132,6 +132,50 @@ public sealed class SessionRunnerIntegrationTests : IDisposable
         Assert.Equal(claudeSession, updatedTicket["sessionId"]?.GetValue<string>());
         Assert.Equal(new[] { originalClaudeSession, claudeSession }, updatedTicket["sessionIds"]!.AsArray().Select(item => item!.GetValue<string>()));
         Assert.True(ReadJson(Path.Combine(claudeDir, "metrics.json"))["totals"]?["prompts"]?.GetValue<int>() > 0);
+
+        var claudeStateFile = Path.Combine(claudeState, "estado.json");
+        var blockedState = ReadJson(claudeStateFile);
+        blockedState["stage"] = "bloqueado";
+        blockedState["next_action"] = "aguardando cenário reproduzível";
+        WriteJson(claudeStateFile, blockedState);
+        var blockedMetricsFile = Path.Combine(claudeDir, "metrics.json");
+        var blockedMetrics = ReadJson(blockedMetricsFile);
+        blockedMetrics["blockers"] = new JsonArray(new JsonObject { ["stage"] = "outro" });
+        WriteJson(blockedMetricsFile, blockedMetrics);
+
+        using var blockedPrompt = StartHook(hookDll, data, "GER5902", claudeRun);
+        await blockedPrompt.StandardInput.WriteLineAsync(new JsonObject
+        {
+            ["hook_event_name"] = "UserPromptSubmit", ["session_id"] = claudeSession, ["prompt"] = "Continue o diagnóstico."
+        }.ToJsonString());
+        blockedPrompt.StandardInput.Close();
+        var blockedOutput = await blockedPrompt.StandardOutput.ReadToEndAsync();
+        var blockedError = await blockedPrompt.StandardError.ReadToEndAsync();
+        await blockedPrompt.WaitForExitAsync(timeout.Token);
+        Assert.True(blockedPrompt.ExitCode == 0, blockedError);
+        Assert.Contains("{}", blockedOutput);
+        Assert.Equal("bloqueado", ReadJson(blockedMetricsFile)["blockers"]!.AsArray().Last()?["stage"]?.GetValue<string>());
+
+        var expandedState = ReadJson(claudeStateFile);
+        expandedState["stage"] = "analise";
+        expandedState["scope_revision"] = 2;
+        WriteJson(claudeStateFile, expandedState);
+        var expandedMetrics = ReadJson(blockedMetricsFile);
+        expandedMetrics["scope_expansions"] = new JsonArray(new JsonObject { ["key"] = "old-revision" });
+        WriteJson(blockedMetricsFile, expandedMetrics);
+
+        using var expandedPrompt = StartHook(hookDll, data, "GER5902", claudeRun);
+        await expandedPrompt.StandardInput.WriteLineAsync(new JsonObject
+        {
+            ["hook_event_name"] = "UserPromptSubmit", ["session_id"] = claudeSession, ["prompt"] = "Continue após revisão."
+        }.ToJsonString());
+        expandedPrompt.StandardInput.Close();
+        var expandedOutput = await expandedPrompt.StandardOutput.ReadToEndAsync();
+        var expandedError = await expandedPrompt.StandardError.ReadToEndAsync();
+        await expandedPrompt.WaitForExitAsync(timeout.Token);
+        Assert.True(expandedPrompt.ExitCode == 0, expandedError);
+        Assert.Contains("{}", expandedOutput);
+        Assert.Equal(2, ReadJson(blockedMetricsFile)["scope_expansions"]!.AsArray().Count);
     }
 
     private static string DotnetExecutable()

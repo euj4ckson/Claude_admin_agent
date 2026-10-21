@@ -112,9 +112,9 @@ public sealed class HookPolicy(string dataRoot)
         if (GetString(state, "stage") != "aguardando_aprovacao") throw new InvalidDataException("A aprovação expirou porque o plano mudou. Registre revisão em escopo.md e change_budget, mude stage para aguardando_aprovacao e solicite nova aprovação.");
         var readiness = ValidateApprovalPlan(state, Encoding.UTF8.GetString(scopeBytes));
         if (readiness.Issues.Count > 0) throw new InvalidDataException("Plano ainda não está pronto para aprovação: " + string.Join("; ", readiness.Issues.Take(8)) + ".");
-        state["component_plans"] = readiness.NormalizedPlans;
-        var budget = state["change_budget"] as JsonObject ?? new JsonObject();
-        state["change_budget"] = budget;
+        state["component_plans"] = readiness.NormalizedPlans.DeepClone();
+        var budget = state["change_budget"] as JsonObject;
+        if (budget is null) state["change_budget"] = budget = new JsonObject();
         if (readiness.OverGuard)
         {
             budget["approved_expansion"] = true;

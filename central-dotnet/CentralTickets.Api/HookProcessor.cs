@@ -197,7 +197,8 @@ public sealed class HookProcessor(string dataRoot)
         if (eventName == "Stop") { Add(totals, "turns", 1); Add(current, "turns", 1); }
         if (phase == "bloqueado" && (metrics["blockers"] as JsonArray ?? []).LastOrDefault()?["stage"]?.GetValue<string>() != GetString(state, "stage"))
         {
-            var blockers = metrics["blockers"] as JsonArray ?? new JsonArray(); metrics["blockers"] = blockers;
+            var blockers = metrics["blockers"] as JsonArray;
+            if (blockers is null) metrics["blockers"] = blockers = new JsonArray();
             blockers.Add(new JsonObject { ["at"] = at, ["stage"] = GetString(state, "stage") ?? "bloqueado", ["reason"] = GetString(state, "next_action") ?? "bloqueio informado no estado" });
         }
         var revision = (int)Number(state, "scope_revision", 1); var budget = state?["change_budget"] as JsonObject;
@@ -205,7 +206,8 @@ public sealed class HookProcessor(string dataRoot)
         if (revision > 1 || expansion || rounds > 0)
         {
             var key = $"{revision}:{rounds}:{expansion.ToString().ToLowerInvariant()}";
-            var history = metrics["scope_expansions"] as JsonArray ?? new JsonArray(); metrics["scope_expansions"] = history;
+            var history = metrics["scope_expansions"] as JsonArray;
+            if (history is null) metrics["scope_expansions"] = history = new JsonArray();
             if (!history.OfType<JsonObject>().Any(item => GetString(item, "key") == key)) history.Add(new JsonObject { ["key"] = key, ["at"] = at, ["revision"] = revision, ["correction_rounds"] = rounds, ["approved"] = expansion });
         }
         metrics["last_stage"] = GetString(state, "stage") ?? GetString(metrics, "last_stage"); metrics["last_event_at"] = at;

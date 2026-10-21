@@ -121,9 +121,9 @@ public sealed class SessionService(string dataRoot, CentralProfile profile, GitW
         var documentsRoot = _profile.GetString("documents_root");
         if (!string.IsNullOrWhiteSpace(documentsRoot)) Directory.CreateDirectory(Path.Combine(documentsRoot, id.ToLowerInvariant()));
         ticket["sessionId"] = sessionId;
-        var ids = ticket["sessionIds"] as JsonArray ?? new JsonArray();
+        var ids = ticket["sessionIds"] as JsonArray;
+        if (ids is null) ticket["sessionIds"] = ids = new JsonArray();
         if (!ids.Any(item => item?.GetValue<string>() == sessionId)) ids.Add(sessionId);
-        ticket["sessionIds"] = ids;
         WriteJson(Path.Combine(dir, "ticket.json"), ticket);
     }
 

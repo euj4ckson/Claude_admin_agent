@@ -30,4 +30,12 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <Target Name="CopyHookRuntimeForIntegrationTests" AfterTargets="Build">
+    <ItemGroup>
+      <HookRuntimeFiles Include="$(MSBuildThisFileDirectory)..\CentralTickets.Hook\bin\$(Configuration)\net10.0\*" />
+      <SessionRunnerRuntimeFiles Include="$(MSBuildThisFileDirectory)..\CentralTickets.SessionRunner\bin\$(Configuration)\net10.0\CentralTickets.SessionRunner.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(HookRuntimeFiles);@(SessionRunnerRuntimeFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>
