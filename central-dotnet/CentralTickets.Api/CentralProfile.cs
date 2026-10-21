@@ -51,9 +51,25 @@ public sealed class CentralProfile
 
         while (pending.TryDequeue(out var current))
         {
-            if (Directory.Exists(Path.Combine(current.Path, ".git")) || File.Exists(Path.Combine(current.Path, ".git")))
+            if (IsGitRepository(current.Path))
             {
                 yield return current.Path;
+                if (current.Depth < maxDepth)
+                {
+                    IEnumerable<string> nested;
+                    try { nested = Directory.EnumerateDirectories(current.Path).ToArray(); }
+                    catch (IOException) { continue; }
+                    catch (UnauthorizedAccessException) { continue; }
+
+                    foreach (var directory in nested)
+                    {
+                        var eligible = false;
+                        try { eligible = (File.GetAttributes(directory) & FileAttributes.ReparsePoint) == 0 && IsGitRepository(directory); }
+                        catch (IOException) { }
+                        catch (UnauthorizedAccessException) { }
+                        if (eligible) yield return directory;
+                    }
+                }
                 continue;
             }
             if (current.Depth >= maxDepth) continue;
@@ -75,6 +91,8 @@ public sealed class CentralProfile
             }
         }
     }
+
+    private static bool IsGitRepository(string path) => Directory.Exists(Path.Combine(path, ".git")) || File.Exists(Path.Combine(path, ".git"));
 
     public CentralRepository? ResolveRepository(string value) => Repositories().FirstOrDefault(item =>
         string.Equals(item.Id, value, StringComparison.OrdinalIgnoreCase)

@@ -43,9 +43,15 @@ public sealed class CentralProfileTests : IDisposable
         var defaultRepo = Path.Combine(repositories, "main-repo");
         var nestedRepo = Path.Combine(repositories, "group", "mobile");
         var nestedInsideRepo = Path.Combine(defaultRepo, "fixtures", "not-a-clone");
+        var repoContainer = Path.Combine(repositories, "canhoto");
+        var nestedFrontend = Path.Combine(repoContainer, "ss_canhoto_frontend");
+        var nestedBackend = Path.Combine(repoContainer, "ss_canhoto_backend");
         Directory.CreateDirectory(Path.Combine(defaultRepo, ".git"));
         Directory.CreateDirectory(Path.Combine(nestedRepo, ".git"));
         Directory.CreateDirectory(Path.Combine(nestedInsideRepo, ".git"));
+        Directory.CreateDirectory(Path.Combine(repoContainer, ".git"));
+        Directory.CreateDirectory(Path.Combine(nestedFrontend, ".git"));
+        Directory.CreateDirectory(Path.Combine(nestedBackend, ".git"));
         Directory.CreateDirectory(data);
         File.WriteAllText(Path.Combine(data, "config.json"), JsonSerializer.Serialize(new
         {
@@ -56,8 +62,10 @@ public sealed class CentralProfileTests : IDisposable
         var profile = new CentralProfile(data);
         var result = profile.Repositories();
 
-        Assert.Equal(new[] { "main-repo", "mobile" }, result.Select(item => item.Name).ToArray());
+        Assert.Equal(new[] { "main-repo", "canhoto", "mobile", "ss_canhoto_backend", "ss_canhoto_frontend" }, result.Select(item => item.Name).ToArray());
         Assert.Contains(result, item => item.Path == nestedRepo);
+        Assert.Contains(result, item => item.Path == nestedFrontend);
+        Assert.Contains(result, item => item.Path == nestedBackend);
         Assert.DoesNotContain(result, item => item.Path == nestedInsideRepo);
     }
 
