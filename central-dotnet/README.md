@@ -7,6 +7,7 @@ Esta pasta inicia a migração da Central para ASP.NET Core/.NET 10. O servidor 
 - Endpoint de saúde (`GET /health`).
 - Leitura dos cadastros e estados JSON já usados pela Central.
 - Listagem e filtros por etapa, texto, repositório e agente (`GET /api/tickets`).
+- Detalhe do ticket com estado, anexos e histórico (`GET /api/tickets/{id}`).
 - Dashboard e contagens confiáveis (`GET /api/dashboard` e `GET /api/stats`).
 - Acesso local com token de bootstrap e cookie HttpOnly.
 

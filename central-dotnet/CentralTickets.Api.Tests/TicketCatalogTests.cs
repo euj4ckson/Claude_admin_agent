@@ -59,6 +59,24 @@ public sealed class TicketCatalogTests : IDisposable
         Assert.Equal("ss_erp_tag1", ticket.RepositoryId);
     }
 
+    [Fact]
+    public void GetDetails_returns_scope_state_and_recent_history()
+    {
+        AddTicket("GER5800", "analise", "Ticket de detalhe");
+        var ticketDirectory = Path.Combine(_dataRoot, "tickets", "ger5800");
+        File.WriteAllText(Path.Combine(ticketDirectory, "events.jsonl"),
+            "{\"at\":\"2026-10-21T12:00:00Z\",\"type\":\"cadastro\",\"message\":\"Ticket cadastrado\"}\n");
+        var catalog = new TicketCatalog(_dataRoot, _stateRoot, _referenceRoot);
+
+        var details = catalog.GetDetails("GER5800");
+
+        Assert.NotNull(details);
+        Assert.Equal("Escopo mínimo de teste para validar o ticket.", details.Scope);
+        Assert.Equal("analise", details.Stage);
+        Assert.Equal("cadastro", Assert.Single(details.Events).Type);
+        Assert.Null(catalog.GetDetails("../../fora"));
+    }
+
     private void AddTicket(string id, string stage, string title, string? repositoryId = "ss_erp_tag1", string agent = "claude")
     {
         var ticketDirectory = Path.Combine(_dataRoot, "tickets", id.ToLowerInvariant());
@@ -69,6 +87,7 @@ public sealed class TicketCatalogTests : IDisposable
             ticket = id,
             sprint = "166",
             release = "main",
+            scope = "Escopo mínimo de teste para validar o ticket.",
             title,
             delivery = "local_commit_only",
             agent,

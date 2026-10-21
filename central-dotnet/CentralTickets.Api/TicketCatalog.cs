@@ -67,6 +67,38 @@ public sealed partial class TicketCatalog
         return results;
     }
 
+    public TicketDetails? GetDetails(string id)
+    {
+        if (!TicketIdRegex().IsMatch(id)) return null;
+        var ticketDirectory = Path.Combine(_dataRoot, "tickets", id.ToLowerInvariant());
+        var record = ReadJson<TicketRecord>(Path.Combine(ticketDirectory, "ticket.json"));
+        if (record is null) return null;
+
+        var stateDirectory = StateDirectory(record);
+        var stateFile = Path.Combine(stateDirectory, record.Id.ToLowerInvariant(), "estado.json");
+        var state = ReadElement(stateFile);
+        var runtime = ReadJson<TicketRuntime>(Path.Combine(ticketDirectory, "runtime.json"));
+        var summary = Summarize(ticketDirectory, record);
+
+        var attachmentDirectory = Path.Combine(_referenceRoot, record.Id.ToLowerInvariant());
+        var attachmentNames = Directory.Exists(attachmentDirectory)
+            ? Directory.EnumerateFiles(attachmentDirectory).Select(Path.GetFileName).Where(name => name is not null).ToArray()
+            : [];
+        var missing = record.Attachments.Where(name => !attachmentNames.Contains(name, StringComparer.OrdinalIgnoreCase)).ToArray();
+        var events = ReadEvents(Path.Combine(ticketDirectory, "events.jsonl"));
+        return new TicketDetails(
+            record.Id, record.Ticket, record.Sprint, record.Release, record.Scope, record.Title,
+            record.Delivery, record.BranchType ?? "feature",
+            record.Repository, record.RepositoryId ?? DefaultRepositoryId(), record.RepositoryStandard,
+            record.IntegrationBranch, record.Agent, record.Components ?? [], record.CreatedAt,
+            record.UpdatedAt, record.Prepared, record.SessionId, record.SessionIds ?? [],
+            record.Branch, record.Worktree, record.BaseSha, summary.Stage,
+            summary.StageLabel, state, summary.StateError,
+            summary.Session, runtime, ReadElement(Path.Combine(ticketDirectory, "approval.json")),
+            events, new AttachmentDetails(attachmentDirectory, Directory.Exists(attachmentDirectory),
+                attachmentNames!, missing));
+    }
+
     public static object Stats(IReadOnlyCollection<TicketSummary> all) => new
     {
         total = all.Count,
@@ -160,16 +192,53 @@ public sealed partial class TicketCatalog
         catch (IOException) { return default; }
     }
 
+    private static JsonElement? ReadElement(string file)
+    {
+        try
+        {
+            using var stream = File.OpenRead(file);
+            using var document = JsonDocument.Parse(stream);
+            return document.RootElement.Clone();
+        }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+        catch (JsonException) { return null; }
+        catch (IOException) { return null; }
+    }
+
+    private static IReadOnlyList<TicketEvent> ReadEvents(string file)
+    {
+        try
+        {
+            return File.ReadLines(file).TakeLast(60).Select(line =>
+            {
+                try { return JsonSerializer.Deserialize<TicketEvent>(line, JsonOptions); }
+                catch (JsonException) { return null; }
+            }).Where(item => item is not null).Select(item => item!).Reverse().ToArray();
+        }
+        catch (FileNotFoundException) { return []; }
+        catch (DirectoryNotFoundException) { return []; }
+        catch (IOException) { return []; }
+    }
+
     [System.Text.RegularExpressions.GeneratedRegex("^[a-z]{2,8}\\d{2,8}$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
     private static partial System.Text.RegularExpressions.Regex TicketIdRegex();
 
     private sealed record ProfileRecord(string? Repository);
     private sealed record TicketRecord(
-        string Id = "", string Ticket = "", string Sprint = "", string Release = "", string Title = "",
+        string Id = "", string Ticket = "", string Sprint = "", string Release = "", string Scope = "", string Title = "",
         string Delivery = "", string Agent = "claude", string? RepositoryId = null, string Repository = "",
         bool Prepared = false, string? Branch = null, string? Worktree = null, string? UpdatedAt = null,
         [property: JsonPropertyName("attachments")] string[]? AttachmentsValue = null,
-        DeliveryDecision? DeliveryDecision = null)
+        DeliveryDecision? DeliveryDecision = null,
+        [property: JsonPropertyName("branch_type")] string? BranchType = null,
+        [property: JsonPropertyName("repository_standard")] JsonElement? RepositoryStandard = null,
+        [property: JsonPropertyName("integration_branch")] string? IntegrationBranch = null,
+        [property: JsonPropertyName("createdAt")] string? CreatedAt = null,
+        string? SessionId = null,
+        string[]? SessionIds = null,
+        string? BaseSha = null,
+        JsonElement[]? Components = null)
     {
         [JsonIgnore] public string[] Attachments => AttachmentsValue ?? [];
     }
@@ -190,3 +259,14 @@ public sealed record RiskSummary(string Level, string Label, string[] Reasons);
 public sealed record QualitySummary(bool CommitReady, bool DeliveryReady, string[] Issues, QualityCounts Counts);
 public sealed record QualityCounts(int Structural, int Evidence, int Delivery);
 public sealed record AttachmentSummary(string[] Missing, int Count, bool Exists, string? Error);
+public sealed record TicketEvent(string? At, string? Type, string? Message);
+public sealed record AttachmentDetails(string Directory, bool Exists, string[] Names, string[] Missing);
+public sealed record TicketDetails(
+    string Id, string Ticket, string Sprint, string Release, string Scope, string Title,
+    string Delivery, string BranchType, string Repository, string? RepositoryId,
+    JsonElement? RepositoryStandard, string? IntegrationBranch, string Agent, JsonElement[] Components,
+    string? CreatedAt, string? UpdatedAt, bool Prepared, string? SessionId, string[] SessionIds,
+    string? Branch, string? Worktree, string? BaseSha, string Stage, string StageLabel,
+    JsonElement? State, string? StateError, string Session, object? Runtime, JsonElement? Approval,
+    IReadOnlyList<TicketEvent> Events,
+    [property: JsonPropertyName("attachments")] AttachmentDetails AttachmentInfo);

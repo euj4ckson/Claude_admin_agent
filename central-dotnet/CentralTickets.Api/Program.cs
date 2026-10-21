@@ -89,6 +89,9 @@ app.MapGet("/api/tickets", (HttpRequest request, TicketCatalog catalog) =>
     return Results.Ok(tickets);
 });
 
+app.MapGet("/api/tickets/{id}", (string id, TicketCatalog catalog) =>
+    catalog.GetDetails(id) is { } ticket ? Results.Ok(ticket) : Results.NotFound(new { error = "Ticket não encontrado." }));
+
 app.MapGet("/api/dashboard", (HttpRequest request, TicketCatalog catalog) =>
 {
     var stage = request.Query["stage"].FirstOrDefault() ?? "active";
