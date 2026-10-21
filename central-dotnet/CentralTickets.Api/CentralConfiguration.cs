@@ -42,7 +42,9 @@ public static class CentralConfiguration
                 repo = FindGitRepository(root!);
             }
         }
-        var fallbackRepositoryRoot = !string.IsNullOrWhiteSpace(repositoryRoot)
+        var fallbackRepositoryRoot = !string.IsNullOrWhiteSpace(repositoriesRootOverride)
+            ? repositoriesRootOverride
+            : !string.IsNullOrWhiteSpace(repositoryRoot)
             ? repositoryRoot
             : repo is not null ? Path.GetDirectoryName(repo)! : defaultRepoRoots.FirstOrDefault() ?? Path.Combine(userProfile, "git");
         var stateRoot = Text(config, "state_root");
@@ -96,12 +98,23 @@ public static class CentralConfiguration
     private static string? FindGitRepository(string root)
     {
         if (!Directory.Exists(root)) return null;
+        var pending = new Queue<(string Path, int Depth)>();
+        pending.Enqueue((root, 0));
         try
         {
-            return Directory.EnumerateDirectories(root)
-                .Where(path => Directory.Exists(Path.Combine(path, ".git")) || File.Exists(Path.Combine(path, ".git")))
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
+            while (pending.TryDequeue(out var current))
+            {
+                if (Directory.Exists(Path.Combine(current.Path, ".git")) || File.Exists(Path.Combine(current.Path, ".git")))
+                    return current.Path;
+                if (current.Depth >= 2) continue;
+
+                foreach (var directory in Directory.EnumerateDirectories(current.Path).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+                {
+                    if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) == 0)
+                        pending.Enqueue((directory, current.Depth + 1));
+                }
+            }
+            return null;
         }
         catch (IOException) { return null; }
         catch (UnauthorizedAccessException) { return null; }

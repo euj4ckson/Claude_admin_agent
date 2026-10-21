@@ -27,9 +27,8 @@ public sealed class CentralProfile
 
         try
         {
-            foreach (var directory in Directory.EnumerateDirectories(root))
+            foreach (var directory in EnumerateRepositories(root, 2))
             {
-                if (!Directory.Exists(Path.Combine(directory, ".git")) && !File.Exists(Path.Combine(directory, ".git"))) continue;
                 var name = Path.GetFileName(directory);
                 var isDefault = Path.GetFullPath(directory).Equals(Path.GetFullPath(configured), StringComparison.OrdinalIgnoreCase);
                 entries.Add(new CentralRepository(name, name, directory, isDefault, StandardFor(name)));
@@ -42,6 +41,39 @@ public sealed class CentralProfile
             entries.Add(new CentralRepository(Path.GetFileName(configured), Path.GetFileName(configured), configured, true, null));
 
         return entries.OrderByDescending(item => item.Default).ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private static IEnumerable<string> EnumerateRepositories(string root, int maxDepth)
+    {
+        if (!Directory.Exists(root)) yield break;
+        var pending = new Queue<(string Path, int Depth)>();
+        pending.Enqueue((root, 0));
+
+        while (pending.TryDequeue(out var current))
+        {
+            if (Directory.Exists(Path.Combine(current.Path, ".git")) || File.Exists(Path.Combine(current.Path, ".git")))
+            {
+                yield return current.Path;
+                continue;
+            }
+            if (current.Depth >= maxDepth) continue;
+
+            IEnumerable<string> directories;
+            try { directories = Directory.EnumerateDirectories(current.Path).ToArray(); }
+            catch (IOException) { continue; }
+            catch (UnauthorizedAccessException) { continue; }
+
+            foreach (var directory in directories)
+            {
+                try
+                {
+                    if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) == 0)
+                        pending.Enqueue((directory, current.Depth + 1));
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
     }
 
     public CentralRepository? ResolveRepository(string value) => Repositories().FirstOrDefault(item =>

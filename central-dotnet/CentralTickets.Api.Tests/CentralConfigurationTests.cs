@@ -80,6 +80,21 @@ public sealed class CentralConfigurationTests : IDisposable
     }
 
     [Fact]
+    public void Ensure_discovers_a_nested_repository_from_an_explicit_clone_root()
+    {
+        var home = Path.Combine(_root, "home-without-profile");
+        var repoRoot = Path.Combine(_root, "custom-clones");
+        var repo = Path.Combine(repoRoot, "group", "mobile-app");
+        Directory.CreateDirectory(Path.Combine(repo, ".git"));
+
+        var config = CentralConfiguration.Ensure(Path.Combine(_root, "fresh-nested-data"), Path.Combine(_root, "app"), home,
+            Path.Combine(_root, "local"), Path.Combine(_root, "roaming"), repoRoot);
+
+        Assert.Equal(repo, config["repository"]!.GetValue<string>());
+        Assert.Equal(repoRoot, config["repositories_root"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Session_settings_allow_computer_use_but_keep_publication_denied()
     {
         var settings = SessionService.CreateSessionSettings();
