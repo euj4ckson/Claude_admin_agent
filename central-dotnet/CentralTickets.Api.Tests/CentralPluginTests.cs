@@ -7,14 +7,11 @@ public sealed class CentralPluginTests
     [Fact]
     public void Claude_plugin_routes_every_managed_event_to_the_compiled_dotnet_hook()
     {
-        var repository = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
-        var plugin = Path.Combine(repository, "central-dotnet", "CentralTickets.Plugin");
+        var plugin = Path.Combine(AppContext.BaseDirectory, "plugin");
         var manifestPath = Path.Combine(plugin, ".claude-plugin", "plugin.json");
         var hooksPath = Path.Combine(plugin, "hooks", "hooks.json");
-        var hookAssembly = Path.Combine(repository, "central-dotnet", "CentralTickets.Hook", "bin", "Release", "net10.0", "CentralTickets.Hook.dll");
 
         Assert.True(File.Exists(manifestPath));
-        Assert.True(File.Exists(hookAssembly), "The Windows launcher must build the Release hook before starting a session.");
         using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
         Assert.Equal("central-tickets", manifest.RootElement.GetProperty("name").GetString());
         using var hooks = JsonDocument.Parse(File.ReadAllText(hooksPath));

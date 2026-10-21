@@ -205,6 +205,86 @@ if (azureDialog) {
   };
 }
 
+const appendInlineMarkdown = (parent, value) => {
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let position = 0;
+  for (const match of value.matchAll(pattern)) {
+    if (match.index > position) parent.append(document.createTextNode(value.slice(position, match.index)));
+    const token = match[0];
+    const element = document.createElement(token.startsWith('`') ? 'code' : token.startsWith('**') ? 'strong' : 'em');
+    element.textContent = token.startsWith('`') ? token.slice(1, -1) : token.startsWith('**') ? token.slice(2, -2) : token.slice(1, -1);
+    parent.append(element);
+    position = match.index + token.length;
+  }
+  if (position < value.length) parent.append(document.createTextNode(value.slice(position)));
+};
+
+const renderMarkdown = (host, source) => {
+  const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+  const fragment = document.createDocumentFragment(), headings = [];
+  let index = 0;
+  const appendList = (type) => {
+    const list = document.createElement(type);
+    while (index < lines.length) {
+      const match = type === 'ol' ? /^\s*\d+[.)]\s+(.+)$/.exec(lines[index]) : /^\s*[-*+]\s+(.+)$/.exec(lines[index]);
+      if (!match) break;
+      const item = document.createElement('li'); appendInlineMarkdown(item, match[1]); list.append(item); index++;
+    }
+    fragment.append(list);
+  };
+  while (index < lines.length) {
+    const line = lines[index].trim();
+    if (!line) { index++; continue; }
+    if (/^```/.test(line)) {
+      index++; const code = [];
+      while (index < lines.length && !/^\s*```/.test(lines[index])) code.push(lines[index++]);
+      if (index < lines.length) index++;
+      const pre = document.createElement('pre'), block = document.createElement('code');
+      block.textContent = code.join('\n'); pre.append(block); fragment.append(pre); continue;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (heading) {
+      const level = heading[1].length, element = document.createElement(`h${level}`);
+      appendInlineMarkdown(element, heading[2]);
+      const slug = heading[2].normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `secao-${headings.length + 1}`;
+      element.id = `md-${slug}-${headings.length}`; headings.push({ id: element.id, text: heading[2] });
+      fragment.append(element); index++; continue;
+    }
+    if (/^([-*_])(?:\s*\1){2,}$/.test(line)) { fragment.append(document.createElement('hr')); index++; continue; }
+    if (/^\s*[-*+]\s+/.test(lines[index])) { appendList('ul'); continue; }
+    if (/^\s*\d+[.)]\s+/.test(lines[index])) { appendList('ol'); continue; }
+    if (line.includes('|') && /^\s*\|?\s*:?-{3,}/.test(lines[index + 1] || '')) {
+      const cells = value => value.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim());
+      const wrapper = document.createElement('div'), table = document.createElement('table'), head = document.createElement('thead'), body = document.createElement('tbody');
+      wrapper.className = 'md-table-wrap';
+      const headerRow = document.createElement('tr');
+      for (const value of cells(lines[index])) { const cell = document.createElement('th'); appendInlineMarkdown(cell, value); headerRow.append(cell); }
+      head.append(headerRow); index += 2;
+      while (index < lines.length && lines[index].includes('|')) {
+        const row = document.createElement('tr');
+        for (const value of cells(lines[index])) { const cell = document.createElement('td'); appendInlineMarkdown(cell, value); row.append(cell); }
+        body.append(row); index++;
+      }
+      table.append(head, body); wrapper.append(table); fragment.append(wrapper); continue;
+    }
+    if (/^>\s?/.test(line)) {
+      const quote = document.createElement('blockquote'); appendInlineMarkdown(quote, line.replace(/^>\s?/, '')); fragment.append(quote); index++; continue;
+    }
+    const paragraph = document.createElement('p');
+    const text = [line]; index++;
+    while (index < lines.length && lines[index].trim() && !/^(#{1,3}\s|```|[-*+]\s|\d+[.)]\s|>\s?)/.test(lines[index].trim())) text.push(lines[index++].trim());
+    appendInlineMarkdown(paragraph, text.join(' ')); fragment.append(paragraph);
+  }
+  host.replaceChildren();
+  if (headings.length) {
+    const outline = document.createElement('nav'); outline.className = 'md-outline'; outline.setAttribute('aria-label', 'Índice');
+    const label = document.createElement('strong'); label.textContent = 'Índice'; outline.append(label);
+    for (const heading of headings) { const link = document.createElement('a'); link.href = `#${heading.id}`; link.textContent = heading.text; outline.append(link); }
+    host.append(outline);
+  }
+  host.append(fragment);
+};
+
 const ticket = window.centralTicket;
 if (ticket) {
   const dialog = $('#registration-dialog');
@@ -255,6 +335,10 @@ if (ticket) {
   }));
   const contentDialog = $('#content-dialog');
   $('#close-content')?.addEventListener('click', () => contentDialog.close());
+  const renderedContent = $('#content-rendered'), rawContent = $('#content-body');
+  $('#show-rendered')?.addEventListener('click', () => { renderedContent.hidden = false; rawContent.hidden = true; $('#show-rendered').classList.add('active'); $('#show-raw').classList.remove('active'); });
+  $('#show-raw')?.addEventListener('click', () => { renderedContent.hidden = true; rawContent.hidden = false; $('#show-raw').classList.add('active'); $('#show-rendered').classList.remove('active'); });
+  $('#print-content')?.addEventListener('click', () => window.print());
   document.querySelectorAll('.content-action').forEach(button => button.addEventListener('click', async () => {
     const kind = button.dataset.kind;
     try {
@@ -262,7 +346,11 @@ if (ticket) {
       const response = await fetch(url, { cache: 'no-store' }); const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Não foi possível abrir o conteúdo.');
       $('#content-title').textContent = kind === 'diff' ? 'ALTERAÇÕES' : kind === 'plan' ? 'PLANO DE ANÁLISE' : 'ENTRADA DO TICKET';
-      $('#content-body').textContent = body.text || 'O conteúdo ainda não foi registrado.'; contentDialog.showModal();
+      const content = body.text || 'O conteúdo ainda não foi registrado.';
+      $('#content-body').textContent = content; renderMarkdown(renderedContent, content);
+      renderedContent.hidden = false; rawContent.hidden = true;
+      $('#show-rendered').classList.add('active'); $('#show-raw').classList.remove('active');
+      contentDialog.showModal();
     } catch (error) { showFeedback(error.message, true); }
   }));
   const attachmentInput = $('#attachment-files');

@@ -31,6 +31,7 @@ $projects = @(
     (Join-Path $appRoot 'central-dotnet\CentralTickets.Api\CentralTickets.Api.csproj'),
     (Join-Path $appRoot 'central-dotnet\CentralTickets.Hook\CentralTickets.Hook.csproj'),
     (Join-Path $appRoot 'central-dotnet\CentralTickets.ComputerMcp\CentralTickets.ComputerMcp.csproj'),
+    (Join-Path $appRoot 'central-dotnet\CentralTickets.SessionRunner\CentralTickets.SessionRunner.csproj'),
     (Join-Path $appRoot 'central-dotnet\CentralTickets.UsageCollector\CentralTickets.UsageCollector.csproj')
 )
 foreach ($project in $projects) {

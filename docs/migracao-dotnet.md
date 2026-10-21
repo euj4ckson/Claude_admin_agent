@@ -18,9 +18,14 @@ Em 21/10/2026, a aplicação principal passou a ser a implementação C#/.NET 10
 
 - Todos os seis projetos estão na solução `CentralTickets.DotNet.sln`.
 - Build Release da solução sem warnings/erros.
-- Suíte automatizada com 37 testes aprovados.
-- Smoke test isolado de inicialização, autenticação local, home, estatísticas e CSS.
+- Suíte automatizada com 44 testes aprovados.
+- Smoke test isolado de inicialização, bootstrap, home, CSS, perfil e listagem sem dados.
+- Interface migrada com filtros por repositório/agente, fila de atenção, contadores de sessões e barra lateral recolhível.
+- Planos e documentos Markdown têm visualização formatada, texto bruto e impressão; o renderizador usa nós de texto para não executar conteúdo do ticket.
+- Configuração de primeira execução importa o perfil local sem sobrescrever dados e permite informar a raiz dos clones por `CENTRAL_TICKETS_REPOSITORIES_ROOT`.
+- Geração de `session-settings.json` preserva o acesso de computer-use sem retirar a negação de publicação.
 - Launcher principal usa a porta 17861 e só compila quando os binários faltam ou quando solicitado.
+- O instalador compila também o SessionRunner, necessário para iniciar e retomar agentes.
 - Os hooks do plugin C# não dependem do runtime Node.
 
 ## Operação e limites

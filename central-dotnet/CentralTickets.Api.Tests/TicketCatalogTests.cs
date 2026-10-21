@@ -48,6 +48,23 @@ public sealed class TicketCatalogTests : IDisposable
     }
 
     [Fact]
+    public void Attention_filter_and_stats_include_waiting_blocked_and_runtime_errors()
+    {
+        AddTicket("GER5803", "aguardando_aprovacao", "Aguardando aprovação");
+        AddTicket("GER5804", "bloqueado", "Ticket bloqueado");
+        AddTicket("GER5805", "analise", "Sessão falhou");
+        File.WriteAllText(Path.Combine(_dataRoot, "tickets", "ger5805", "runtime.json"), "{\"phase\":\"error\"}");
+        var catalog = new TicketCatalog(_dataRoot, _stateRoot, _referenceRoot);
+
+        var attention = catalog.List("attention", null, null, null, 10);
+        using var stats = JsonDocument.Parse(JsonSerializer.Serialize(TicketCatalog.Stats(catalog.List("all", null, null, null, 10))));
+
+        Assert.Equal(3, attention.Count);
+        Assert.Equal(3, stats.RootElement.GetProperty("attention").GetInt32());
+        Assert.Equal(3, stats.RootElement.GetProperty("active").GetInt32());
+    }
+
+    [Fact]
     public void List_uses_legacy_default_repository_state_folder_when_record_has_no_repository()
     {
         AddTicket("GER5800", "revisao", "Ticket antigo", repositoryId: null, agent: "claude");

@@ -98,7 +98,7 @@ public sealed class SessionService(string dataRoot, CentralProfile profile, GitW
             componentManifest.Add(component);
         }
         WriteJson(Path.Combine(dir, "components.json"), componentManifest);
-        if (!File.Exists(Path.Combine(dir, "session-settings.json"))) File.WriteAllText(Path.Combine(dir, "session-settings.json"), "{}", new System.Text.UTF8Encoding(false));
+        WriteJson(Path.Combine(dir, "session-settings.json"), CreateSessionSettings());
         var dotnet = _profile.GetString("dotnet") ?? "dotnet";
         var appRoot = _profile.GetString("appRoot") ?? "";
         var computerServerPath = Path.Combine(appRoot, "central-dotnet", "CentralTickets.ComputerMcp", "bin", "Release", "net10.0-windows", "CentralTickets.ComputerMcp.dll");
@@ -123,6 +123,24 @@ public sealed class SessionService(string dataRoot, CentralProfile profile, GitW
         ticket["sessionIds"] = ids;
         WriteJson(Path.Combine(dir, "ticket.json"), ticket);
     }
+
+    public static JsonObject CreateSessionSettings() => new()
+    {
+        ["permissions"] = new JsonObject
+        {
+            ["allow"] = new JsonArray(
+                "mcp__central-computer__computer_screenshot",
+                "mcp__central-computer__computer_active_window",
+                "mcp__central-computer__computer_click",
+                "mcp__central-computer__computer_type",
+                "mcp__central-computer__computer_key",
+                "mcp__central-computer__computer_wait"),
+            ["deny"] = new JsonArray(
+                "Bash(git push *)",
+                "Bash(git -C * push *)",
+                "PowerShell(git push *)")
+        }
+    };
 
     public object Focus(string ticketId)
     {

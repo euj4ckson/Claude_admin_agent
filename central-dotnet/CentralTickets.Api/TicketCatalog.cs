@@ -57,11 +57,12 @@ public sealed partial class TicketCatalog
             var record = directory.Record!;
             if (!string.IsNullOrWhiteSpace(repository) && !string.Equals(record.RepositoryId, repository, StringComparison.OrdinalIgnoreCase)) continue;
             if (!string.IsNullOrWhiteSpace(agent) && !string.Equals(record.Agent, agent, StringComparison.OrdinalIgnoreCase)) continue;
-            if (normalizedQuery.Length > 0 && !string.Join(' ', record.Id, record.Title, record.Release).Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)) continue;
+            if (normalizedQuery.Length > 0 && !string.Join(' ', record.Id, record.Title, record.Release, record.RepositoryId).Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)) continue;
 
             var summary = Summarize(directory.Path, record);
             if (stage == "active" && summary.Stage == "concluido") continue;
             if (stage == "done" && summary.Stage != "concluido") continue;
+            if (stage == "attention" && (summary.Stage == "concluido" || !NeedsAttention(summary))) continue;
             results.Add(summary);
             if (results.Count == limit) break;
         }
@@ -106,9 +107,15 @@ public sealed partial class TicketCatalog
         total = all.Count,
         active = all.Count(ticket => ticket.Stage != "concluido"),
         running = all.Count(ticket => ticket.Session is "running" or "uncertain"),
-        attention = all.Count(ticket => ticket.Stage.Contains("aguardando", StringComparison.Ordinal) || ticket.Stage == "bloqueado" || ticket.StateError is not null),
+        attention = all.Count(NeedsAttention),
         done = all.Count(ticket => ticket.Stage == "concluido")
     };
+
+    private static bool NeedsAttention(TicketSummary ticket) =>
+        ticket.Stage.Contains("aguardando", StringComparison.Ordinal)
+        || ticket.Stage == "bloqueado"
+        || ticket.StateError is not null
+        || ticket.Runtime?.Phase == "error";
 
     private TicketSummary Summarize(string ticketDirectory, TicketRecord record, bool checkDiff = false)
     {

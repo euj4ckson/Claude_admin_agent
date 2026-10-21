@@ -13,6 +13,14 @@ builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
 
 var dataRoot = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_DATA_ROOT")
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CentralTicketsClaude");
+var appRoot = FindApplicationRoot(builder.Environment.ContentRootPath, AppContext.BaseDirectory);
+CentralConfiguration.Ensure(
+    dataRoot,
+    appRoot,
+    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+    Environment.GetEnvironmentVariable("CENTRAL_TICKETS_REPOSITORIES_ROOT"));
 var defaultStateRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "ticket-state");
 var defaultReferenceRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Claude Referencias", "Ref Dev");
 var defaultWorktreesRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "erp-worktrees");
@@ -123,11 +131,14 @@ app.MapGet("/health", () => Results.Ok(new
 app.MapGet("/", (HttpRequest request, TicketCatalog catalog) =>
 {
     var stage = request.Query["stage"].FirstOrDefault() ?? "active";
-    if (stage is not ("active" or "done" or "all")) stage = "active";
+    if (stage is not ("active" or "attention" or "done" or "all")) stage = "active";
     var query = request.Query["q"].FirstOrDefault();
-    var tickets = catalog.List(stage, query, null, null, 500);
+    var repository = request.Query["repository"].FirstOrDefault();
+    var agent = request.Query["agent"].FirstOrDefault();
+    var tickets = catalog.List(stage, query, repository, agent, 500);
     var all = catalog.List("all", null, null, null, 500);
-    return Results.Content(TicketPageRenderer.Index(tickets, all, stage, query), "text/html; charset=utf-8");
+    var profile = request.HttpContext.RequestServices.GetRequiredService<CentralProfile>();
+    return Results.Content(TicketPageRenderer.Index(tickets, all, stage, query, profile.Repositories(), repository, agent), "text/html; charset=utf-8");
 });
 
 app.MapGet("/tickets/{id}", (string id, TicketCatalog catalog) =>
@@ -354,6 +365,20 @@ static bool IsWithin(string root, string target)
     return fullPath.Equals(basePath, StringComparison.OrdinalIgnoreCase)
         || fullPath.StartsWith(basePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
         || fullPath.StartsWith(basePath + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+}
+
+static string FindApplicationRoot(params string[] starts)
+{
+    foreach (var start in starts)
+    {
+        var current = new DirectoryInfo(start);
+        while (current is not null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "CentralTickets.DotNet.sln"))) return current.FullName;
+            current = current.Parent;
+        }
+    }
+    return Path.GetFullPath(starts[0]);
 }
 
 string ConfiguredPath(string property, string fallback)

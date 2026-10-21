@@ -30,7 +30,7 @@ O instalador prepara os projetos .NET e cria o atalho **Central de Tickets** na 
 2. Execute `instalar-central.cmd` no Windows. Se preferir, use `instalar-central.ps1` em PowerShell.
 3. Abra **Central de Tickets** pelo atalho da Área de Trabalho.
 
-O atalho inicia a API local sem exibir uma janela de console e abre o navegador. A aplicação escuta somente em `127.0.0.1:17862`. Na primeira execução, o instalador compila a solução; nas próximas, o atalho reutiliza os binários existentes. Para recompilar manualmente:
+O atalho inicia a API local sem exibir uma janela de console e abre o navegador. A aplicação escuta somente em `127.0.0.1:17861`. Na primeira execução, o instalador compila a solução; nas próximas, o atalho reutiliza os binários existentes. Se `%LOCALAPPDATA%\CentralTicketsClaude\config.json` não existir, a Central cria a configuração a partir do perfil local da skill `desenvolver-ticket`, quando disponível, ou tenta encontrar um clone Git em `C:\git` / `%USERPROFILE%\git`. Use `CENTRAL_TICKETS_REPOSITORIES_ROOT` para outra pasta de clones. Confira os caminhos gerados antes de cadastrar tickets.
 
 ```powershell
 dotnet build .\CentralTickets.DotNet.sln --configuration Release

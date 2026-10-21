@@ -13,26 +13,55 @@ public static class TicketPageRenderer
         <p class="usage-note">Os percentuais e datas de renovação são exibidos somente quando vieram de uma resposta válida. Leituras ausentes, vencidas ou antigas não são convertidas em valores estimados.</p></main><script src="/usage.js" defer></script>
         """);
 
-    public static string Index(IReadOnlyList<TicketSummary> tickets, IReadOnlyCollection<TicketSummary> all, string stage, string? query)
+    public static string Index(
+        IReadOnlyList<TicketSummary> tickets,
+        IReadOnlyCollection<TicketSummary> all,
+        string stage,
+        string? query,
+        IReadOnlyList<CentralRepository> repositories,
+        string? repositoryFilter,
+        string? agentFilter)
     {
         var active = all.Count(ticket => ticket.Stage != "concluido");
         var done = all.Count - active;
+        var running = all.Count(ticket => ticket.Session is "running" or "uncertain");
+        var attention = all.Count(ticket => ticket.Stage.Contains("aguardando", StringComparison.Ordinal)
+            || ticket.Stage == "bloqueado" || ticket.StateError is not null || ticket.Runtime?.Phase == "error");
+        var repositoryOptions = string.Join("", repositories.Select(item =>
+            $"<option value=\"{E(item.Id)}\"{(string.Equals(item.Id, repositoryFilter, StringComparison.OrdinalIgnoreCase) ? " selected" : "")}>{E(item.Name)}</option>"));
+        var agentOptions = string.Join("", new[] { (Id: "claude", Name: "Claude Code"), (Id: "codex", Name: "Codex CLI") }
+            .Select(item => $"<option value=\"{item.Id}\"{(string.Equals(item.Id, agentFilter, StringComparison.OrdinalIgnoreCase) ? " selected" : "")}>{item.Name}</option>"));
+        var activeClass = stage == "active" ? " selected" : "";
+        var attentionClass = stage == "attention" ? " selected" : "";
+        var doneClass = stage == "done" ? " selected" : "";
         var cards = tickets.Count == 0
             ? "<div class=\"empty-state\"><span class=\"empty-icon\">⌕</span><h2>Nenhum ticket encontrado</h2><p>Tente mudar o filtro ou a busca.</p></div>"
             : string.Join(Environment.NewLine, tickets.Select(TicketCard));
         var content = $"""
-            <header class="topbar"><a class="brand" href="/"><span class="brand-mark">CT</span><span>Central <small>EM C#</small></span></a><nav class="top-nav"><a class="active" href="/">Tickets</a><a href="/usage">Uso dos agentes</a></nav><span class="connection"><i></i> API local</span></header>
-            <main class="shell">
-              <div class="page-heading"><div><p class="eyebrow">ACOMPANHAMENTO</p><h1>Central de tickets</h1><p class="subtitle">Gestão local dos tickets, sessões e entregas.</p></div><div class="heading-actions"><button class="secondary" id="azure-import">Trazer do Azure</button><button class="primary" id="new-ticket">Novo ticket</button></div></div>
+            <header class="topbar"><button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Recolher barra lateral" aria-controls="ticket-sidebar" aria-expanded="true" title="Recolher barra lateral"><span aria-hidden="true">☰</span></button><a class="brand" href="/"><span class="brand-mark">CT</span><span>Central <small>EM C#</small></span></a><nav class="top-nav"><a class="active" href="/">Tickets</a><a href="/usage">Uso dos agentes</a></nav><span class="connection"><i></i> API local</span></header>
+            <div class="dashboard-layout"><aside class="sidebar" id="ticket-sidebar" aria-label="Navegação dos tickets">
+              <p class="sidebar-label">SEU ESPAÇO DE TRABALHO</p>
+              <a class="sidebar-link{activeClass}" href="/?stage=active" title="Em andamento"><span class="sidebar-icon" aria-hidden="true">▪</span><span class="sidebar-copy">Em andamento</span><b>{active}</b></a>
+              <a class="sidebar-link{attentionClass}" href="/?stage=attention" title="Precisam de você"><span class="sidebar-icon" aria-hidden="true">◉</span><span class="sidebar-copy">Precisam de você</span><b>{attention}</b></a>
+              <a class="sidebar-link{doneClass}" href="/?stage=done" title="Entregues"><span class="sidebar-icon" aria-hidden="true">✓</span><span class="sidebar-copy">Entregues</span><b>{done}</b></a>
+              <div class="sidebar-note"><span class="small-dot"></span><span class="sidebar-copy">Trabalho local<p>Uma conversa por ticket.<br>Seu contexto, organizado.</p></span></div>
+            </aside><main class="shell">
+              <div class="page-heading"><div><p class="eyebrow">ACOMPANHAMENTO</p><h1>Central de tickets</h1><p class="subtitle">Gestão local dos tickets, sessões e entregas.</p></div><div class="heading-actions"><button class="secondary" id="sync-memory-home">Atualizar conhecimento</button><button class="secondary" id="azure-import">Trazer do Azure</button><button class="primary" id="new-ticket">Novo ticket</button></div></div>
+              <div id="environment" class="environment" role="status" hidden></div>
+              <div id="home-feedback" class="home-feedback" role="status" hidden></div>
               <section class="stats" aria-label="Resumo dos tickets">
-                <a class="stat-card {(stage == "active" ? "selected" : "")}" href="/?stage=active"><span class="stat-label">Em andamento</span><strong>{active}</strong><span class="stat-note">tickets ativos</span></a>
-                <a class="stat-card {(stage == "done" ? "selected" : "")}" href="/?stage=done"><span class="stat-label">Entregues</span><strong>{done}</strong><span class="stat-note">histórico concluído</span></a>
-                <a class="stat-card {(stage == "all" ? "selected" : "")}" href="/?stage=all"><span class="stat-label">Total</span><strong>{all.Count}</strong><span class="stat-note">tickets cadastrados</span></a>
+                <a class="stat-card{activeClass}" href="/?stage=active"><span class="stat-label">Em andamento</span><strong>{active}</strong><span class="stat-note">tickets ativos</span></a>
+                <a class="stat-card" href="/?stage=all"><span class="stat-label">Conversas abertas</span><strong>{running}</strong><span class="stat-note">sessões identificadas</span></a>
+                <a class="stat-card{attentionClass}" href="/?stage=attention"><span class="stat-label">Precisam de você</span><strong>{attention}</strong><span class="stat-note">aprovação, validação ou bloqueio</span></a>
+                <a class="stat-card{doneClass}" href="/?stage=done"><span class="stat-label">Entregues</span><strong>{done}</strong><span class="stat-note">histórico concluído</span></a>
+                <a class="stat-card" href="/?stage=all"><span class="stat-label">Total</span><strong>{all.Count}</strong><span class="stat-note">tickets cadastrados</span></a>
               </section>
-              <section class="list-panel"><div class="list-heading"><div><h2>{(stage == "done" ? "Tickets entregues" : stage == "all" ? "Todos os tickets" : "Em andamento")}</h2><p>{tickets.Count} resultado(s)</p></div>
-                <form class="search" method="get" action="/"><input type="hidden" name="stage" value="{E(stage)}"><label class="sr-only" for="q">Buscar tickets</label><span aria-hidden="true">⌕</span><input id="q" name="q" value="{E(query ?? "")}" placeholder="Buscar por código ou título"><button type="submit">Buscar</button></form></div><div class="ticket-list">{cards}</div>
-              </section><footer class="footer"><span>Central de Tickets · ASP.NET Core</span><span>Os dados existentes são preservados.</span></footer>
-            </main>
+              <section class="list-panel"><div class="list-heading"><div><h2>{(stage == "done" ? "Tickets entregues" : stage == "attention" ? "Tickets que precisam de você" : stage == "all" ? "Todos os tickets" : "Em andamento")}</h2><p>{tickets.Count} resultado(s)</p></div>
+                <form class="search" method="get" action="/"><input type="hidden" name="stage" value="{E(stage)}"><input type="hidden" name="repository" value="{E(repositoryFilter ?? "")}"><input type="hidden" name="agent" value="{E(agentFilter ?? "")}"><label class="sr-only" for="q">Buscar tickets</label><span aria-hidden="true">⌕</span><input id="q" name="q" value="{E(query ?? "")}" placeholder="Buscar ticket ou repositório"><button type="submit">Buscar</button></form></div>
+                <form class="ticket-filters" method="get" action="/"><input type="hidden" name="stage" value="{E(stage)}"><input type="hidden" name="q" value="{E(query ?? "")}"><label>Repositório<select name="repository"><option value="">Todos os repositórios</option>{repositoryOptions}</select></label><label>Agente<select name="agent"><option value="">Todos os agentes</option>{agentOptions}</select></label><button class="secondary" type="submit">Aplicar filtros</button><a class="filter-reset" href="/?stage={Uri.EscapeDataString(stage)}">Limpar</a><button class="text-button" id="refresh-dashboard" type="button">Atualizar ↻</button></form>
+                <div class="ticket-list">{cards}</div>
+              </section><footer class="footer"><span id="repo-label">Central de Tickets · ASP.NET Core</span><span>Os dados existentes são preservados.</span></footer>
+            </main></div>
             <dialog id="ticket-dialog"><form id="ticket-form"><div class="dialog-head"><p class="eyebrow">NOVO DESENVOLVIMENTO</p><h2>Organizar ticket</h2><p>O cadastro não inicia uma sessão de agente.</p></div><div class="form-grid">
               <label>Ticket<input name="ticket" required placeholder="GER5800"></label><label>Sprint<input name="sprint" required inputmode="numeric" placeholder="166"></label>
               <label class="wide">Repositório<select name="repository" id="repository" required></select></label><label>Agente<select name="agent"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option></select></label><label>Tipo de branch<select name="branchType"><option>feature</option><option>hotfix</option></select></label>
@@ -67,7 +96,7 @@ public static class TicketPageRenderer
               <section class="detail-grid"><article class="detail-card scope-card"><div class="card-heading"><div><h2>Escopo do ticket</h2><p>Solicitação cadastrada</p></div></div><div class="scope-text">{E(ticket.Scope)}</div><div class="detail-actions"><button class="secondary content-action" data-kind="input">Entrada completa</button><button class="secondary content-action" data-kind="plan">Plano de análise</button><button class="secondary content-action" data-kind="diff">Alterações</button></div></article>
               <article class="detail-card"><div class="card-heading"><div><h2>Branch e entrega</h2><p>Informações de desenvolvimento</p></div></div><dl class="facts"><dt>Origem</dt><dd>{E(ticket.Release)}</dd><dt>Branch</dt><dd>{E(ticket.Branch ?? "Ainda não preparada")}</dd><dt>Agente</dt><dd>{E(ticket.Agent)}</dd><dt>Sessão</dt><dd>{E(ticket.Session)}</dd></dl><div class="detail-actions"><button class="secondary" id="prepare-worktree">Preparar worktree</button><button class="primary" id="start-session">Abrir / retomar conversa</button><button class="secondary" id="focus-session">Focar conversa</button><button class="secondary" data-open="worktree">Pasta de trabalho</button><button class="secondary" data-open="document">Documento final</button><button class="secondary" id="edit-ticket">Editar cadastro</button><button class="secondary" id="sync-memory">Atualizar conhecimento</button><button class="secondary" id="complete-ticket">Marcar entregue</button></div><div id="session-feedback" class="form-error" hidden></div></article>
               <article class="detail-card"><div class="card-heading"><div><h2>Anexos</h2><p>{ticket.AttachmentInfo.Names.Length} arquivo(s)</p></div></div><ul class="file-list">{files}</ul><div class="detail-actions"><button class="secondary" data-open="references">Abrir pasta de anexos</button><button class="secondary" id="add-attachments">Adicionar arquivos</button><input id="attachment-files" type="file" multiple hidden></div></article><article class="detail-card"><div class="card-heading"><div><h2>Atividade recente</h2><p>Eventos do ticket</p></div></div><ol class="event-list">{events}</ol></article></section><footer class="footer"><span>Central de Tickets · ASP.NET Core</span><span>Entrega manual preserva histórico e pendências.</span></footer></main>
-            <dialog id="content-dialog" class="content-dialog"><div class="content-head"><div><p class="eyebrow" id="content-title">CONTEÚDO</p><p class="subtitle">Conteúdo local do ticket</p></div><button class="secondary" id="close-content">Fechar</button></div><pre id="content-body"></pre></dialog>
+            <dialog id="content-dialog" class="content-dialog"><div class="content-head"><div><p class="eyebrow" id="content-title">CONTEÚDO</p><p class="subtitle">Visualização formatada; o texto bruto continua disponível para conferência.</p></div><div class="content-actions"><button class="secondary active" id="show-rendered" type="button">Formatado</button><button class="secondary" id="show-raw" type="button">Texto bruto</button><button class="secondary" id="print-content" type="button">Imprimir</button><button class="secondary" id="close-content">Fechar</button></div></div><article id="content-rendered" class="markdown-view"></article><pre id="content-body" hidden></pre></dialog>
             <dialog id="registration-dialog"><form id="registration-form"><div class="dialog-head"><p class="eyebrow">CADASTRO</p><h2>Editar entrega de {E(ticket.Id)}</h2><p>Alterar agente ou entrega após iniciar requer cautela; não muda worktree existente.</p></div><div class="form-grid"><label>Agente<select name="agent"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option></select></label><label>Tipo de branch<select name="branchType"><option value="feature">feature</option><option value="hotfix">hotfix</option></select></label><label>Sprint<input name="sprint" required></label><label>Origem<input name="release" required></label><label class="wide">Entrega<select name="delivery"><option value="local_commit_only">Commit local, sem push</option><option value="no_commit">Sem commit</option></select></label></div><div id="registration-error" class="form-error" hidden></div><div class="dialog-actions"><button type="button" class="secondary" id="cancel-edit">Cancelar</button><button class="primary">Salvar</button></div></form></dialog><script>window.centralTicket={clientTicket};</script><script src="/dashboard.js" defer></script><script src="/app.js" defer></script>
             """;
         return Layout(ticket.Id + " · Central de Tickets", content);

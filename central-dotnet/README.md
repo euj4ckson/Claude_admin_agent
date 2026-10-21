@@ -22,11 +22,11 @@ dotnet test .\central-dotnet\CentralTickets.Api.Tests\CentralTickets.Api.Tests.c
 .\abrir-central-dotnet.ps1
 ```
 
-O servidor é local, em `http://127.0.0.1:17862`. O atalho executa sem console visível e reaproveita os binários já compilados. Para compilar novamente, use `abrir-central-dotnet.ps1 -Recompilar`.
+O servidor é local, em `http://127.0.0.1:17861`. O atalho executa sem console visível e reaproveita os binários já compilados. Para compilar novamente, use `abrir-central-dotnet.ps1 -Recompilar`.
 
 ## Configuração
 
-A configuração fica em `%LOCALAPPDATA%\CentralTicketsClaude\config.json`. Os caminhos podem ser sobrescritos pelas variáveis `CENTRAL_TICKETS_DATA_ROOT`, `CENTRAL_TICKETS_STATE_ROOT`, `CENTRAL_TICKETS_REFERENCES_ROOT` e `CENTRAL_TICKETS_WORKTREES_ROOT`. A porta padrão é 17862 e pode ser alterada com `CENTRAL_TICKETS_DOTNET_PORT`.
+A configuração fica em `%LOCALAPPDATA%\CentralTicketsClaude\config.json`. Na primeira execução, a Central preserva um `config.json` existente; se não houver, importa o perfil local `~/.claude/skills/desenvolver-ticket/perfil.json` e completa os caminhos padrão. Sem perfil, tenta localizar um clone Git em `C:\git` ou `%USERPROFILE%\git`; defina `CENTRAL_TICKETS_REPOSITORIES_ROOT` para indicar outra pasta de clones. Confira e ajuste os caminhos em `config.json` antes de cadastrar tickets. As variáveis `CENTRAL_TICKETS_DATA_ROOT`, `CENTRAL_TICKETS_STATE_ROOT`, `CENTRAL_TICKETS_REFERENCES_ROOT` e `CENTRAL_TICKETS_WORKTREES_ROOT` podem sobrescrever diretórios. A porta padrão é 17861 e pode ser alterada com `CENTRAL_TICKETS_DOTNET_PORT`.
 
 Claude Code e Codex CLI devem estar instalados e autenticados à parte. O token do Azure pode ser configurado pela interface e fica protegido com DPAPI no perfil do Windows.
 

@@ -21,6 +21,8 @@
   <ItemGroup>
     <ProjectReference Include="..\CentralTickets.Api\CentralTickets.Api.csproj" />
     <ProjectReference Include="..\CentralTickets.UsageCollector\CentralTickets.UsageCollector.csproj" />
+    <None Include="..\CentralTickets.Plugin\.claude-plugin\plugin.json" Link="plugin\.claude-plugin\plugin.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\CentralTickets.Plugin\hooks\hooks.json" Link="plugin\hooks\hooks.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
