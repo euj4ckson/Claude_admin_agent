@@ -20,9 +20,9 @@ Requer o SDK .NET 10. Na raiz do repositório:
 ```powershell
 dotnet build CentralTickets.DotNet.sln
 dotnet test CentralTickets.DotNet.sln
-dotnet run --project central-dotnet/CentralTickets.Api
+.\abrir-central-dotnet.ps1
 ```
 
-O endereço padrão é `http://127.0.0.1:17862`. O processo cria `launch-dotnet.json` na pasta de dados local para armazenar o token de acesso desta instância; ele é removido ao encerrar normalmente.
+O atalho inicia o processo em segundo plano e abre a página da API em `http://127.0.0.1:17862`. Ele não fecha nem substitui o servidor Node (`17861`). O processo cria `launch-dotnet.json` na pasta de dados local para armazenar o token de acesso desta instância; ele é removido ao encerrar normalmente.
 
 Para apontar a leitura para outra instalação, configure `CENTRAL_TICKETS_DATA_ROOT`, `CENTRAL_TICKETS_STATE_ROOT` e `CENTRAL_TICKETS_REFERENCES_ROOT`. Os cadastros, estados e anexos são lidos sem alterações; apenas o arquivo de sessão `launch-dotnet.json` é criado/removido dentro da pasta de dados.

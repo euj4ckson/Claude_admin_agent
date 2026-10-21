@@ -78,6 +78,26 @@ app.MapGet("/health", () => Results.Ok(new
     pid = Environment.ProcessId
 }));
 
+app.MapGet("/", () => Results.Content("""
+    <!doctype html>
+    <html lang="pt-BR">
+    <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Central de Tickets · C#</title></head>
+    <body>
+      <main>
+        <h1>Central de Tickets · etapa C#</h1>
+        <p>Esta versão é uma API de leitura em migração. O servidor Node continua sendo a Central completa.</p>
+        <ul>
+          <li><a href="/api/tickets?stage=active">Tickets em andamento</a></li>
+          <li><a href="/api/tickets?stage=done">Tickets entregues</a></li>
+          <li><a href="/api/dashboard?stage=active">Resumo do painel</a></li>
+          <li><a href="/api/stats">Contagens</a></li>
+        </ul>
+        <p>Os dados dos tickets são somente leitura nesta etapa.</p>
+      </main>
+    </body>
+    </html>
+    """, "text/html; charset=utf-8"));
+
 app.MapGet("/api/tickets", (HttpRequest request, TicketCatalog catalog) =>
 {
     var tickets = catalog.List(
