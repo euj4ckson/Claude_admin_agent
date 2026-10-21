@@ -18,7 +18,7 @@ Em 21/10/2026, a aplicação principal passou a ser a implementação C#/.NET 10
 
 - Todos os seis projetos estão na solução `CentralTickets.DotNet.sln`.
 - Build Release da solução sem warnings/erros.
-- Suíte automatizada com 49 testes aprovados (inclui os testes de integração do runner/hook e sessões Codex).
+- Suíte automatizada com 51 testes aprovados (inclui os testes de integração do runner/hook e sessões Codex).
 - Smoke test isolado de inicialização, bootstrap, home, CSS, perfil e listagem sem dados.
 - Interface migrada com filtros por repositório/agente, fila de atenção, contadores de sessões e barra lateral recolhível.
 - Planos e documentos Markdown têm visualização formatada, texto bruto e impressão; o renderizador usa nós de texto para não executar conteúdo do ticket.
@@ -29,6 +29,8 @@ Em 21/10/2026, a aplicação principal passou a ser a implementação C#/.NET 10
 - Os hooks do plugin C# não dependem do runtime Node.
 
 ## Paridade das operações
+
+O hook Claude preserva os identificadores de sessão anteriores e aceita o identificador novo emitido ao iniciar uma conversa gerenciada; o teste de regressão confirma que a lista JSON existente é atualizada sem reutilizar um nó já associado.
 
 As operações do servidor antigo foram migradas para endpoints ASP.NET Core. As telas principais agora são servidas pela aplicação C#, e os recursos do painel continuam disponíveis:
 

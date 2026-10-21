@@ -116,6 +116,23 @@ public sealed class HookPolicyTests : IDisposable
     }
 
     [Fact]
+    public async Task Hook_processor_adds_new_managed_session_id_without_reparenting_existing_json_array()
+    {
+        var ticketFile = Path.Combine(_data, "tickets", "ger5811", "ticket.json");
+        var original = JsonNode.Parse(File.ReadAllText(ticketFile))!.AsObject();
+        var previousSessionId = original["sessionId"]!.GetValue<string>();
+        var newSessionId = "managed-session-fixture";
+        var processor = new HookProcessor(_data);
+
+        await processor.HandleAsync(new JsonObject { ["hook_event_name"] = "SessionStart", ["session_id"] = newSessionId });
+
+        var saved = JsonNode.Parse(File.ReadAllText(ticketFile))!.AsObject();
+        Assert.Equal(newSessionId, saved["sessionId"]?.GetValue<string>());
+        Assert.Equal(new[] { previousSessionId, newSessionId }, saved["sessionIds"]!.AsArray().Select(item => item!.GetValue<string>()));
+        Assert.True(saved["sessionStarted"]?.GetValue<bool>());
+    }
+
+    [Fact]
     public async Task Codex_session_lifecycle_records_metrics_and_queues_learning_on_end()
     {
         var ticketPath = Path.Combine(_data, "tickets", "ger5811", "ticket.json");

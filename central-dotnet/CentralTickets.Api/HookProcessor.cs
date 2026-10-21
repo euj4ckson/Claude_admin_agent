@@ -73,8 +73,15 @@ public sealed class HookProcessor(string dataRoot)
             if (!known && !managed) throw new InvalidDataException("Esta sessão não corresponde à reserva ativa deste ticket.");
             if (!known)
             {
-                var ids = ticket["sessionIds"] as JsonArray ?? new JsonArray(GetString(ticket, "sessionId"));
-                ids.Add(sessionId); ticket["sessionIds"] = ids; ticket["sessionId"] = sessionId;
+                var ids = ticket["sessionIds"] as JsonArray;
+                if (ids is null)
+                {
+                    ids = new JsonArray();
+                    if (GetString(ticket, "sessionId") is { } previousSessionId) ids.Add(previousSessionId);
+                    ticket["sessionIds"] = ids;
+                }
+                ids.Add(sessionId);
+                ticket["sessionId"] = sessionId;
                 WriteJson(ticketPath, ticket); AppendEvent(dir, "sessao", "Identificador de conversa atualizado na sessão gerenciada; histórico preservado.");
             }
         }
