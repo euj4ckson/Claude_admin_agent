@@ -246,13 +246,9 @@ app.MapPost("/api/tickets/{id}/focus", (string id, SessionService sessions) => R
 app.MapGet("/api/tickets/{id}/metrics", (string id, TicketCatalog catalog) =>
 {
     var ticket = catalog.GetDetails(id);
-    if (ticket is null) return Results.NotFound(new { error = "Ticket não encontrado." });
-    var file = Path.Combine(dataRoot, "tickets", ticket.Id.ToLowerInvariant(), "metrics.json");
-    JsonNode metrics;
-    try { metrics = JsonNode.Parse(File.ReadAllText(file)) ?? new JsonObject(); }
-    catch (IOException) { metrics = new JsonObject(); }
-    catch (JsonException) { metrics = new JsonObject { ["error"] = "metrics.json inválido; arquivo preservado." }; }
-    return Results.Ok(new { ticket = ticket.Id, stage = ticket.Stage, metrics });
+    return ticket is null
+        ? Results.NotFound(new { error = "Ticket não encontrado." })
+        : Results.Ok(new { ticket = ticket.Id, risk = ticket.Risk, quality = ticket.Quality, metrics = ticket.Metrics });
 });
 app.MapPost("/api/tickets/{id}/open", (string id, OpenTargetRequest input, TicketCatalog catalog) =>
 {

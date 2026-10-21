@@ -12,6 +12,7 @@ Data da verificação: 21/10/2026.
 - Os 8 scripts PowerShell distribuídos passaram pela análise sintática; a árvore Git atual não contém `server.mjs`, `package.json`, módulos `.mjs`/`.cjs` nem `node_modules`.
 - O smoke test criou `config.json` e cadastros em diretório temporário; não criou ticket nem acessou Azure, e a pasta foi removida ao final.
 - A rodada de paridade também testou contagem/filtro de atenção, contadores da navegação, filtros selecionados, conteúdo formatado/bruto e controles de impressão.
+- A comparação com o servidor legado identificou e corrigiu a resposta de `/api/tickets/{id}/metrics`: ela volta a expor risco, qualidade e métricas calculadas do ticket, em vez de apenas reler `metrics.json`.
 - Os testes cobrem importação do perfil local, preservação/idempotência de `config.json` e permissões MCP/negação de push da sessão.
 - O runner Codex registra `SessionStart`/`SessionEnd` pelo hook .NET; o encerramento sincroniza o aprendizado e preserva a fila local se o AI Memory estiver indisponível.
 - O hook Claude aponta para o assembly .NET; o manifesto do plugin não chama runtime Node.

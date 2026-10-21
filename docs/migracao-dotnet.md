@@ -18,7 +18,7 @@ Em 21/10/2026, a aplicação principal passou a ser a implementação C#/.NET 10
 
 - Todos os seis projetos estão na solução `CentralTickets.DotNet.sln`.
 - Build Release da solução sem warnings/erros.
-- Suíte automatizada com 44 testes aprovados.
+- Suíte automatizada com 49 testes aprovados (inclui os testes de integração do runner/hook e sessões Codex).
 - Smoke test isolado de inicialização, bootstrap, home, CSS, perfil e listagem sem dados.
 - Interface migrada com filtros por repositório/agente, fila de atenção, contadores de sessões e barra lateral recolhível.
 - Planos e documentos Markdown têm visualização formatada, texto bruto e impressão; o renderizador usa nós de texto para não executar conteúdo do ticket.
@@ -27,6 +27,21 @@ Em 21/10/2026, a aplicação principal passou a ser a implementação C#/.NET 10
 - Launcher principal usa a porta 17861 e só compila quando os binários faltam ou quando solicitado.
 - O instalador compila também o SessionRunner, necessário para iniciar e retomar agentes.
 - Os hooks do plugin C# não dependem do runtime Node.
+
+## Paridade das operações
+
+As operações do servidor antigo foram migradas para endpoints ASP.NET Core. As telas principais agora são servidas pela aplicação C#, e os recursos do painel continuam disponíveis:
+
+| Fluxo | Operações .NET |
+|---|---|
+| Inicialização e painel | `/health`, `/bootstrap`, `/`, `/tickets/{id}`, `/usage`, `/api/profile`, `/api/stream` |
+| Tickets e acompanhamento | `/api/tickets` (lista/cadastro), `/api/tickets/{id}`, `/api/tickets/{id}/metrics`, `/api/stats`, `/api/dashboard` |
+| Cadastro e entrega manual | `/api/tickets/{id}/registration`, `/api/tickets/{id}/complete`, `/api/tickets/{id}/attachments`, `/api/tickets/{id}/content` |
+| Preparação e execução | `/api/tickets/{id}/prepare`, `/preflight`, `/diff`, `/start`, `/focus`, `/open` |
+| Azure DevOps | `/api/azure/status`, `/configure`, `/preview`, `/import` |
+| AI Memory e consumo | `/api/memory-sync`, `/api/tickets/{id}/memory-sync`, `/api/usage`, `/api/usage/codex` |
+
+Além das rotas anteriores, cadastro manual, atualização dos dados de registro e conclusão manual foram adicionados em .NET. A validação de integração exercita inicialização/fim de sessão, hook, reserva e fila local em diretório temporário; nenhum ticket real ou sessão autenticada de modelo é aberto como teste.
 
 ## Operação e limites
 
