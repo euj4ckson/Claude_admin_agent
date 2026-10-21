@@ -91,12 +91,13 @@ public sealed class SessionRunnerIntegrationTests : IDisposable
         Directory.CreateDirectory(claudeState);
         var claudeRun = Guid.NewGuid().ToString();
         var claudeSession = Guid.NewGuid().ToString();
+        var originalClaudeSession = Guid.NewGuid().ToString();
         WriteJson(Path.Combine(claudeDir, "ticket.json"), new JsonObject
         {
             ["id"] = "GER5902", ["ticket"] = "GER5902", ["agent"] = "claude", ["repository"] = worktree,
             ["repositoryId"] = "ss_erp_tag1", ["worktree"] = worktree, ["branch"] = "feature/166/ger5902",
             ["prepared"] = true, ["title"] = "Fixture Claude", ["scope"] = "Teste isolado do hook Claude.",
-            ["delivery"] = "no_commit", ["sessionId"] = claudeSession, ["sessionIds"] = new JsonArray(claudeSession)
+            ["delivery"] = "no_commit", ["sessionId"] = originalClaudeSession, ["sessionIds"] = new JsonArray(originalClaudeSession)
         });
         WriteJson(Path.Combine(claudeDir, "runtime.json"), new JsonObject { ["runId"] = claudeRun, ["phase"] = "running", ["startedAt"] = DateTimeOffset.UtcNow.ToString("O") });
         WriteJson(Path.Combine(claudeDir, "active.lock"), new JsonObject { ["runId"] = claudeRun });
@@ -113,6 +114,23 @@ public sealed class SessionRunnerIntegrationTests : IDisposable
         Assert.Contains("SessionStart", hookOutput);
         Assert.True(ReadJson(Path.Combine(claudeDir, "ticket.json"))["sessionStarted"]?.GetValue<bool>());
         Assert.Equal("SessionStart", ReadJson(Path.Combine(claudeDir, "hook-status.json"))["event"]?.GetValue<string>());
+
+        using var promptHook = StartHook(hookDll, data, "GER5902", claudeRun);
+        await promptHook.StandardInput.WriteLineAsync(new JsonObject
+        {
+            ["hook_event_name"] = "UserPromptSubmit", ["session_id"] = claudeSession, ["prompt"] = "Analise o escopo do ticket."
+        }.ToJsonString());
+        promptHook.StandardInput.Close();
+        var promptOutput = await promptHook.StandardOutput.ReadToEndAsync();
+        var promptError = await promptHook.StandardError.ReadToEndAsync();
+        await promptHook.WaitForExitAsync(timeout.Token);
+
+        Assert.True(promptHook.ExitCode == 0, promptError);
+        Assert.DoesNotContain("The node already has a parent", promptError, StringComparison.OrdinalIgnoreCase);
+        var updatedTicket = ReadJson(Path.Combine(claudeDir, "ticket.json"));
+        Assert.Equal(claudeSession, updatedTicket["sessionId"]?.GetValue<string>());
+        Assert.Equal(new[] { originalClaudeSession, claudeSession }, updatedTicket["sessionIds"]!.AsArray().Select(item => item!.GetValue<string>()));
+        Assert.True(ReadJson(Path.Combine(claudeDir, "metrics.json"))["totals"]?["prompts"]?.GetValue<int>() > 0);
     }
 
     private static string DotnetExecutable()
