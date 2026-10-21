@@ -36,6 +36,30 @@ public sealed class CentralProfileTests : IDisposable
     }
 
     [Fact]
+    public void ResolveRepository_accepts_equivalent_windows_path_separators()
+    {
+        var data = Path.Combine(_root, "data");
+        var repositories = Path.Combine(_root, "git");
+        var fva = Path.Combine(repositories, "ss_fva");
+        Directory.CreateDirectory(Path.Combine(fva, ".git"));
+        Directory.CreateDirectory(data);
+        File.WriteAllText(Path.Combine(data, "config.json"), JsonSerializer.Serialize(new
+        {
+            repository = fva,
+            repositories_root = repositories
+        }));
+
+        var profile = new CentralProfile(data);
+        var mixedSeparators = fva.Replace('\\', '/');
+
+        var result = profile.ResolveRepository(mixedSeparators);
+
+        Assert.NotNull(result);
+        Assert.Equal("ss_fva", result.Id);
+        Assert.Equal(Path.GetFullPath(fva), Path.GetFullPath(result.Path));
+    }
+
+    [Fact]
     public void Repositories_discovers_nested_clones_but_does_not_scan_inside_a_repository()
     {
         var data = Path.Combine(_root, "data");

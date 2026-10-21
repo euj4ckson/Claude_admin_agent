@@ -94,9 +94,21 @@ public sealed class CentralProfile
 
     private static bool IsGitRepository(string path) => Directory.Exists(Path.Combine(path, ".git")) || File.Exists(Path.Combine(path, ".git"));
 
-    public CentralRepository? ResolveRepository(string value) => Repositories().FirstOrDefault(item =>
-        string.Equals(item.Id, value, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(item.Path, value, StringComparison.OrdinalIgnoreCase));
+    public CentralRepository? ResolveRepository(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalizedValue = NormalizeRepositoryPath(value);
+        return Repositories().FirstOrDefault(item =>
+            string.Equals(item.Id, value.Trim(), StringComparison.OrdinalIgnoreCase)
+            || string.Equals(NormalizeRepositoryPath(item.Path), normalizedValue, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string NormalizeRepositoryPath(string path)
+    {
+        try { return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)); }
+        catch (ArgumentException) { return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
+        catch (NotSupportedException) { return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
+    }
 
     public string? AgentExecutable(string agent) => agent.ToLowerInvariant() switch
     {
