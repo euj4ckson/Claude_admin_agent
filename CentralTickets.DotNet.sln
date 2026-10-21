@@ -7,6 +7,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "central-dotnet", "central-d
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CentralTickets.Api", "central-dotnet\CentralTickets.Api\CentralTickets.Api.csproj", "{EE0161BB-63DA-4098-838F-7EBD385D1C58}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CentralTickets.Api.Tests", "central-dotnet\CentralTickets.Api.Tests\CentralTickets.Api.Tests.csproj", "{68B9C291-76C5-43F7-8C60-942424262B6D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -29,11 +31,24 @@ Global
 		{EE0161BB-63DA-4098-838F-7EBD385D1C58}.Release|x64.Build.0 = Release|Any CPU
 		{EE0161BB-63DA-4098-838F-7EBD385D1C58}.Release|x86.ActiveCfg = Release|Any CPU
 		{EE0161BB-63DA-4098-838F-7EBD385D1C58}.Release|x86.Build.0 = Release|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Debug|x64.Build.0 = Debug|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Debug|x86.Build.0 = Debug|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Release|x64.ActiveCfg = Release|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Release|x64.Build.0 = Release|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Release|x86.ActiveCfg = Release|Any CPU
+		{68B9C291-76C5-43F7-8C60-942424262B6D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{EE0161BB-63DA-4098-838F-7EBD385D1C58} = {7B7EF968-7094-5ED2-5C09-31A2CFBC7F31}
+		{68B9C291-76C5-43F7-8C60-942424262B6D} = {7B7EF968-7094-5ED2-5C09-31A2CFBC7F31}
 	EndGlobalSection
 EndGlobal
