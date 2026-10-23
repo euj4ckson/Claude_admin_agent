@@ -19,8 +19,8 @@ const fillComponents = (form, profile, primaryId) => {
     const row = document.createElement('label'); row.className = 'component-row';
     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.repositoryId = repo.id;
     const name = document.createElement('span'); name.textContent = repo.name;
-    const release = document.createElement('input'); release.type = 'text'; release.placeholder = repo.standard?.base || 'Release do ERP (ex.: release/106.4.3)';
-    release.value = repo.standard?.base || ''; release.readOnly = Boolean(repo.standard?.base);
+    const release = document.createElement('input'); release.type = 'text'; release.placeholder = repo.defaultBase || 'Branch de origem (ex.: release/106.4.3)';
+    release.value = repo.defaultBase || ''; release.readOnly = Boolean(repo.standard?.base);
     row.append(checkbox, name, release); rows.append(row);
   }
 };
@@ -62,7 +62,7 @@ if (ticketDialog) {
         const option = document.createElement('option');
         option.value = item.id;
         option.textContent = `${item.name}${item.default ? ' (padrão)' : ''}`;
-        option.dataset.base = item.standard?.base || 'main';
+        option.dataset.base = item.defaultBase || item.standard?.base || 'main';
         return option;
       }));
       const agent = $('#ticket-form').elements.agent;
@@ -72,7 +72,7 @@ if (ticketDialog) {
       const firstAvailable = [...agent.options].find(option => !option.disabled);
       if (firstAvailable) agent.value = firstAvailable.value;
       fillComponents($('#ticket-form'), profile, repository.value);
-      $('#ticket-form').elements.release.value = repository.selectedOptions[0]?.dataset.base || 'main';
+      $('#ticket-form').elements.release.value = repository.selectedOptions[0]?.dataset.base || '';
       ticketDialog.showModal();
     } catch (error) {
       const box = $('#form-error'); box.textContent = error.message; box.hidden = false;
@@ -80,7 +80,7 @@ if (ticketDialog) {
     }
   };
   $('#repository').onchange = async event => {
-    $('#ticket-form').elements.release.value = event.target.selectedOptions[0]?.dataset.base || 'main';
+    $('#ticket-form').elements.release.value = event.target.selectedOptions[0]?.dataset.base || '';
     const response = await fetch('/api/profile'); fillComponents($('#ticket-form'), await response.json(), event.target.value);
   };
   $('#cancel-ticket').onclick = () => ticketDialog.close();
@@ -156,12 +156,12 @@ if (azureDialog) {
       const repoSelect = $('#azure-repository');
       repoSelect.replaceChildren(...profile.repositories.map(item => {
         const option = document.createElement('option'); option.value = item.id; option.textContent = item.name;
-        option.dataset.base = item.standard?.base || 'main';
+        option.dataset.base = item.defaultBase || item.standard?.base || 'main';
         if (item.id === previewData.suggested.repositoryId) option.selected = true;
         return option;
       }));
       fillComponents(form, profile, repoSelect.value);
-      form.elements.release.value = previewData.suggested.release || repoSelect.selectedOptions[0]?.dataset.base || 'main';
+      form.elements.release.value = repoSelect.selectedOptions[0]?.dataset.base || previewData.suggested.release || '';
       const agent = form.elements.agent;
       for (const option of agent.options) option.disabled = !profile.agents.find(item => item.id === option.value)?.available;
       const available = [...agent.options].find(option => !option.disabled); if (available) agent.value = available.value;
@@ -178,7 +178,7 @@ if (azureDialog) {
   };
   $('#azure-repository').onchange = async event => {
     const selected = event.target.selectedOptions[0];
-    if (selected) $('#azure-form').elements.release.value = selected.dataset.base || 'main';
+    if (selected) $('#azure-form').elements.release.value = selected.dataset.base || '';
     const response = await fetch('/api/profile');
     fillComponents($('#azure-form'), await response.json(), event.target.value);
   };

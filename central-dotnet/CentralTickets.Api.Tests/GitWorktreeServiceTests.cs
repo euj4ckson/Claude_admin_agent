@@ -49,8 +49,25 @@ public sealed class GitWorktreeServiceTests : IDisposable
             state_base_root = _state,
             worktrees_base_root = _worktrees,
             claude = _agent,
-            codex = (string?)null
+            codex = (string?)null,
+            default_branch_by_repository = new Dictionary<string, string> { ["ss_erp_tag1"] = "release/106.4.3" }
         }));
+    }
+
+    [Fact]
+    public async Task Prepare_uses_the_configured_repository_base_when_ticket_origin_is_omitted()
+    {
+        var profile = new CentralProfile(_data);
+        var writer = new TicketWriter(_data, _state, profile);
+        writer.Create(new CreateTicketRequest(
+            "GER5805", "166", null, "Preparar a worktree sobre a origem configurada do ERP.", "Origem ERP configurada",
+            "no_commit", "feature", "claude", "ss_erp_tag1", null, [], null, null));
+        var service = new GitWorktreeService(_data, _state, _worktrees, profile);
+
+        var prepared = await service.Prepare("GER5805", default);
+
+        Assert.Equal(Git(_repo, "rev-parse", "refs/remotes/origin/release/106.4.3"), prepared["baseSha"]?.GetValue<string>());
+        Assert.Equal("release/106.4.3", prepared["release"]?.GetValue<string>());
     }
 
     [Fact]

@@ -45,6 +45,23 @@ public sealed class TicketWriterTests : IDisposable
     }
 
     [Fact]
+    public void Create_uses_repository_default_base_when_no_origin_was_provided()
+    {
+        File.WriteAllText(Path.Combine(_data, "config.json"), JsonSerializer.Serialize(new
+        {
+            repository = _repository,
+            repositories_root = Path.GetDirectoryName(_repository),
+            claude = _claude,
+            default_branch_by_repository = new Dictionary<string, string> { ["ss_erp_tag1"] = "release/106.4.3" }
+        }));
+
+        var writer = new TicketWriter(_data, _state, new CentralProfile(_data));
+        var created = writer.Create(NewTicket("GER5805") with { Release = null });
+
+        Assert.Equal("release/106.4.3", created.GetProperty("release").GetString());
+    }
+
+    [Fact]
     public void Delivery_can_be_changed_during_a_live_session_and_updates_the_state_gate()
     {
         var writer = CreateWriter();

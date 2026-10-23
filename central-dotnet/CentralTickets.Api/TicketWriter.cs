@@ -21,7 +21,7 @@ public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfi
         var branchType = ValidateBranchType(input.BranchType ?? "feature");
         var agent = ValidateAgent(input.Agent ?? "claude");
         var repository = ResolveRepository(input.Repository ?? input.RepositoryId ?? "");
-        var release = ValidateRelease(repository.Standard?.Base ?? input.Release ?? "main");
+        var release = ValidateRelease(repository.Standard?.Base ?? input.Release ?? repository.DefaultBase ?? "main");
         var title = (input.Title ?? "").Trim();
         if (title.Length == 0) title = scope.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? id;
         title = title[..Math.Min(160, title.Length)];
@@ -82,7 +82,7 @@ public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfi
         var agent = ValidateAgent(input.Agent ?? GetString(current, "agent") ?? "claude");
         var delivery = ValidateDelivery(input.Delivery ?? GetString(current, "delivery") ?? "");
         var sprint = ValidateSprint(input.Sprint ?? GetString(current, "sprint") ?? "");
-        var release = ValidateRelease(repository.Standard?.Base ?? input.Release ?? GetString(current, "release") ?? "");
+        var release = ValidateRelease(repository.Standard?.Base ?? input.Release ?? GetString(current, "release") ?? repository.DefaultBase ?? "");
         var branchType = ValidateBranchType(input.BranchType ?? GetString(current, "branch_type") ?? "feature");
 
         var runtime = ReadObject(Path.Combine(ticketDirectory, "runtime.json"));

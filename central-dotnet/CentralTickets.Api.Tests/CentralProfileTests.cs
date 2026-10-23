@@ -60,6 +60,28 @@ public sealed class CentralProfileTests : IDisposable
     }
 
     [Fact]
+    public void Repositories_exposes_configured_default_base_for_repositories_without_a_standard_flow()
+    {
+        var data = Path.Combine(_root, "data");
+        var repositories = Path.Combine(_root, "git");
+        var erp = Path.Combine(repositories, "ss_erp_tag1");
+        Directory.CreateDirectory(Path.Combine(erp, ".git"));
+        Directory.CreateDirectory(data);
+        File.WriteAllText(Path.Combine(data, "config.json"), JsonSerializer.Serialize(new
+        {
+            repository = erp,
+            repositories_root = repositories,
+            default_branch_by_repository = new Dictionary<string, string> { ["ss_erp_tag1"] = "release/106.4.3" }
+        }));
+
+        var profile = new CentralProfile(data);
+        var repository = Assert.Single(profile.Repositories());
+
+        Assert.Null(repository.Standard);
+        Assert.Equal("release/106.4.3", repository.DefaultBase);
+    }
+
+    [Fact]
     public void Repositories_discovers_nested_clones_but_does_not_scan_inside_a_repository()
     {
         var data = Path.Combine(_root, "data");

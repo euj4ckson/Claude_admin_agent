@@ -31,16 +31,34 @@ public sealed class CentralProfile
             {
                 var name = Path.GetFileName(directory);
                 var isDefault = Path.GetFullPath(directory).Equals(Path.GetFullPath(configured), StringComparison.OrdinalIgnoreCase);
-                entries.Add(new CentralRepository(name, name, directory, isDefault, StandardFor(name)));
+                entries.Add(CreateRepository(name, directory, isDefault));
             }
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
 
         if (!entries.Any(item => item.Default) && (Directory.Exists(Path.Combine(configured, ".git")) || File.Exists(Path.Combine(configured, ".git"))))
-            entries.Add(new CentralRepository(Path.GetFileName(configured), Path.GetFileName(configured), configured, true, null));
+            entries.Add(CreateRepository(Path.GetFileName(configured), configured, true));
 
         return entries.OrderByDescending(item => item.Default).ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private CentralRepository CreateRepository(string name, string path, bool isDefault)
+    {
+        var standard = StandardFor(name);
+        return new CentralRepository(name, name, path, isDefault, standard, DefaultBaseFor(name, standard));
+    }
+
+    private string? DefaultBaseFor(string repositoryId, RepositoryStandard? standard)
+    {
+        if (standard is not null) return standard.Base;
+        if (!_settings.RootElement.TryGetProperty("default_branch_by_repository", out var branches)
+            || branches.ValueKind != JsonValueKind.Object) return null;
+        foreach (var branch in branches.EnumerateObject())
+            if (string.Equals(branch.Name, repositoryId, StringComparison.OrdinalIgnoreCase)
+                && branch.Value.ValueKind == JsonValueKind.String)
+                return branch.Value.GetString();
+        return null;
     }
 
     private static IEnumerable<string> EnumerateRepositories(string root, int maxDepth)
@@ -228,5 +246,5 @@ public sealed class CentralProfile
 
 }
 
-public sealed record CentralRepository(string Id, string Name, string Path, bool Default, RepositoryStandard? Standard);
+public sealed record CentralRepository(string Id, string Name, string Path, bool Default, RepositoryStandard? Standard, string? DefaultBase = null);
 public sealed record RepositoryStandard(string Base, string Integration, bool PullBeforeStart, bool RestoreNuget, bool NoBinaryCommit);
