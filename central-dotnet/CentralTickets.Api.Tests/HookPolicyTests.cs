@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
+using System.Text;
 using CentralTickets.Api;
 
 namespace CentralTickets.Api.Tests;
@@ -40,6 +42,101 @@ public sealed class HookPolicyTests : IDisposable
         Assert.True(HookPolicy.IsReadCommand("cd \"/c/Users/test/repo\" 2>/dev/null && ls -la; cat estado.json"));
         foreach (var command in new[] { "cat x > y", "cat $(touch file)", "find . -exec rm {} +", "git diff --output=x", "node script.js", "cat x &" })
             Assert.False(HookPolicy.IsReadCommand(command), command);
+    }
+
+    [Fact]
+    public void Fva_tests_may_read_only_from_the_approved_cloudss_database()
+    {
+        PrepareSqlTicket("FVA0351", "ss_fva");
+        var policy = new HookPolicy(_data);
+        var allowed = policy.PreTool(Input("Bash", new JsonObject
+        {
+            ["command"] = "sqlcmd -S cloudss.dyndns.org,667 -E -d SSBDFV_PD -Q \"SELECT TOP (1) IdEmpresa FROM dbo.SSEmpresas\""
+        }));
+        Assert.True(Decision(allowed) == "allow", allowed.ToJsonString());
+
+        foreach (var command in new[]
+        {
+            "sqlcmd -S cloudss.dyndns.org,667 -E -d SSBDFV_PD -Q \"UPDATE dbo.SSEmpresas SET Nome = 'x'\"",
+            "sqlcmd -S cloudss.dyndns.org,667 -E -d SSBDFV_PD -Q \"SELECT NEXT VALUE FOR dbo.SeqTeste\"",
+            "sqlcmd -S cloudss.dyndns.org,667 -E -d SSBDPROD -Q \"SELECT 1\"",
+            "sqlcmd -S other.example,667 -E -d SSBDFV_PD -Q \"SELECT 1\"",
+            "sqlcmd -S cloudss.dyndns.org,667 -d SSBDFV_PD -Q \"SELECT 1\"",
+            "sqlcmd -S cloudss.dyndns.org,667 -E -U fixture -P fixture -d SSBDFV_PD -Q \"SELECT 1\""
+        })
+        {
+            Assert.Equal("deny", Decision(policy.PreTool(Input("Bash", new JsonObject { ["command"] = command }))));
+        }
+
+        PrepareSqlTicket("GER5811", "ss_erp_tag1");
+        var localDatabase = policy.PreTool(Input("Bash", new JsonObject
+        {
+            ["command"] = "sqlcmd -S localhost -E -d qualquer_banco_local -Q \"SELECT 1\""
+        }));
+        Assert.Equal("allow", Decision(localDatabase));
+        var nonFva = policy.PreTool(Input("Bash", new JsonObject
+        {
+            ["command"] = "sqlcmd -S cloudss.dyndns.org,667 -E -d SSBDFV_PD -Q \"SELECT 1\""
+        }));
+        Assert.Equal("deny", Decision(nonFva));
+    }
+
+    [Fact]
+    public void Background_execution_is_allowed_only_for_isolated_or_read_only_fva_tests()
+    {
+        PrepareSqlTicket("FVA0351", "ss_fva");
+        var policy = new HookPolicy(_data);
+        var readOnlyRemoteQuery = policy.PreTool(Input("Bash", new JsonObject
+        {
+            ["command"] = "sqlcmd -S cloudss.dyndns.org,667 -E -d SSBDFV_PD -Q \"SELECT TOP (1) IdEmpresa FROM dbo.SSEmpresas\"",
+            ["run_in_background"] = true
+        }));
+        Assert.Equal("allow", Decision(readOnlyRemoteQuery));
+        Assert.False(File.Exists(Path.Combine(_data, "execution.lock")));
+
+        PrepareSqlTicket("GER5811", "ss_erp_tag1");
+        var scratch = Path.Combine(_state, "ss_erp_tag1", "ger5811", "scratch");
+        var queryFile = Path.Combine(scratch, "isolated-test.sql");
+        File.WriteAllText(queryFile, "SELECT 1;");
+        var isolatedDatabase = policy.PreTool(Input("PowerShell", new JsonObject
+        {
+            ["command"] = $"sqlcmd -S localhost -E -d SSBD_TESTE_GER5811 -i \"{queryFile}\"",
+            ["run_in_background"] = true
+        }));
+        Assert.Equal("allow", Decision(isolatedDatabase));
+        Assert.False(File.Exists(Path.Combine(_data, "execution.lock")));
+
+        var sharedTest = policy.PreTool(Input("PowerShell", new JsonObject
+        {
+            ["command"] = "dotnet test C:\\git\\ss_erp_tag1\\CentralTickets.Api.Tests\\CentralTickets.Api.Tests.csproj",
+            ["run_in_background"] = true
+        }));
+        Assert.Equal("deny", Decision(sharedTest));
+        Assert.Contains("recurso compartilhado", sharedTest["hookSpecificOutput"]?["permissionDecisionReason"]?.GetValue<string>() ?? "");
+    }
+
+    private void PrepareSqlTicket(string id, string repositoryId)
+    {
+        var ticketDirectory = Path.Combine(_data, "tickets", id.ToLowerInvariant());
+        Directory.CreateDirectory(ticketDirectory);
+        var repository = Path.Combine(_root, "git", repositoryId);
+        Directory.CreateDirectory(repository);
+        File.WriteAllText(Path.Combine(ticketDirectory, "ticket.json"), new JsonObject
+        {
+            ["id"] = id,
+            ["repositoryId"] = repositoryId,
+            ["repository"] = repository
+        }.ToJsonString());
+        File.WriteAllText(Path.Combine(ticketDirectory, "runtime.json"), "{\"runId\":\"run-hook-fixture\",\"phase\":\"running\",\"pid\":" + Environment.ProcessId + "}");
+
+        var stateDirectory = Path.Combine(_state, repositoryId.ToLowerInvariant(), id.ToLowerInvariant());
+        Directory.CreateDirectory(Path.Combine(stateDirectory, "scratch"));
+        const string scope = "Plano de teste remoto somente leitura para validar o destino SQL.";
+        File.WriteAllText(Path.Combine(stateDirectory, "escopo.md"), scope);
+        File.WriteAllText(Path.Combine(stateDirectory, "estado.json"), "{\"stage\":\"testes\"}");
+        var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(scope)));
+        File.WriteAllText(Path.Combine(ticketDirectory, "approval.json"), new JsonObject { ["scopeHash"] = hash }.ToJsonString());
+        Environment.SetEnvironmentVariable("CENTRAL_TICKET_ID", id);
     }
 
     [Fact]

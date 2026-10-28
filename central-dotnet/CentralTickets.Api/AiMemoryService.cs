@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using System.Net.Http.Headers;
 
 namespace CentralTickets.Api;
 
@@ -113,6 +114,8 @@ public sealed class AiMemoryService(string dataRoot, CentralProfile profile, IHt
         var baseUrl = (_profile.GetString("ai_memory_url") ?? "http://127.0.0.1:49374").TrimEnd('/');
         using var client = _clients.CreateClient("ai-memory");
         client.Timeout = TimeSpan.FromSeconds(5);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         var payload = new { jsonrpc = "2.0", id = GetString(row, "id") ?? Guid.NewGuid().ToString("N"), method = "tools/call", @params = new { name = "memory_write_page", arguments = new { path = page.Path, body = page.Body, tier = "semantic", tags = new[] { "central-tickets", (GetString(row, "ticket") ?? "").ToLowerInvariant() } } } };
         using var response = await client.PostAsJsonAsync(baseUrl + "/mcp", payload, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new HttpRequestException($"AI Memory respondeu HTTP {(int)response.StatusCode}.");

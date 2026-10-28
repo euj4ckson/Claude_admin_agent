@@ -125,6 +125,12 @@ public sealed class HookProcessor(string dataRoot)
                 break;
         }
         var metrics = RecordMetric(ticket, id, input, eventName);
+        if (eventName == "UserPromptSubmit")
+        {
+            ticket["firstPromptSubmitted"] = true;
+            ticket["firstPromptSubmittedAt"] = DateTimeOffset.UtcNow.ToString("O");
+            WriteJson(ticketPath, ticket);
+        }
         if (eventName == "SessionEnd")
         {
             try
@@ -218,7 +224,7 @@ public sealed class HookProcessor(string dataRoot)
 
     private string TakeGuidance(JsonObject ticket, JsonObject input, string eventName, string ticketDir)
     {
-        const string version = "2026-10-21-dotnet-1";
+        const string version = "2026-10-28-token-2";
         var sessionId = GetString(input, "session_id") ?? GetString(ticket, "sessionId") ?? "";
         var file = Path.Combine(ticketDir, "guidance-receipt.json");
         var receipt = Read(file);
@@ -228,8 +234,8 @@ public sealed class HookProcessor(string dataRoot)
         var text = new StringBuilder();
         text.AppendLine("Economia sem reduzir qualidade: preserve aprovação humana, análise de impacto e rotinas paralelas, revisão independente, matriz integral, build/testes e evidências verificáveis. Não marque teste não executado como OK.");
         text.AppendLine("Leia a entrada, o estado e o skill do repositório; use rg para localizar símbolos e leia métodos, chamadores e consumidores. Evite dumps e releituras desnecessárias. Após qualquer correção, repita os testes afetados. Guarde logs completos no scratch e registre comando, exit code, resumo e caminho.");
-        text.AppendLine("Para testes em tela, capture antes/ação/resultado e inclua imagens no DOCX; se a ferramenta estiver indisponível, registre SCREENSHOT_NAO_EXECUTADO. Mantenha o diff estritamente dentro do escopo, registre progresso sem repetir o plano e crie checkpoint antes de compactar.");
-        text.AppendLine("Compilação/testes: execute de forma síncrona e isolada. ERP: SQL local -S localhost -E e base SSBD_TESTE do ticket; build em worktree com OutputPath no scratch. Recursos isolados não devem bloquear outros tickets; recursos compartilhados são reservados somente durante o comando.");
+        text.AppendLine("Em testes de tela, agrupe passos determinísticos com computer_sequence apenas quando permanecer na mesma janela; a ferramenta interrompe se o título mudar. Confira a tela nos pontos de decisão e use computer_wait_for_title para uma janela conhecida, evitando ciclos de espera/print. Capture os estados relevantes antes, durante a ação quando necessário e no resultado. Salve o PNG completo para o DOCX; em computer_screenshot use includeImage=false quando só precisar guardar evidência e true quando precisar interpretar a tela. Inclua as evidências no DOCX com legenda e esperado/obtido. Se a ferramenta estiver indisponível, registre SCREENSHOT_NAO_EXECUTADO. Registre progresso sem repetir o plano e crie checkpoint antes de compactar.");
+        text.AppendLine("Compilação/testes: execute de forma síncrona e isolada. ERP: pode usar qualquer banco da instância SQL local com -S localhost -E; nunca conecte ao ERP de cliente. Build em worktree com OutputPath no scratch. Recursos isolados não devem bloquear outros tickets; recursos compartilhados são reservados somente durante o comando.");
         var repository = GetString(ticket, "repository") ?? "";
         var repositoryId = GetString(ticket, "repositoryId") ?? Path.GetFileName(repository);
         if (repositoryId.Equals("ss_fva", StringComparison.OrdinalIgnoreCase) || repositoryId.Equals("ss_wcf_fvan", StringComparison.OrdinalIgnoreCase) || System.Text.RegularExpressions.Regex.IsMatch(GetString(ticket, "id") ?? "", "^FVA\\d+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
@@ -238,7 +244,7 @@ public sealed class HookProcessor(string dataRoot)
             var repositoriesRoot = GetString(config, "repositories_root") ?? Path.GetDirectoryName(repository) ?? "";
             text.AppendLine("Ecossistema FVA/WCF/ERP: mapear tabela/view ERP → DAO/contrato SOAP WCF → DTO/SQLite/sincronização/tela e caminho de volta. Usar main como origem e pre_main como homologação em FVA/WCF; ERP segue seu fluxo. Restaurar NuGet no WCF; não versionar bin/obj/.vs/packages; build automático do WCF é obrigatório em PR.");
             text.AppendLine($"Repos para consulta: ERP={GetString(config, "repository")}; ss_fva={Path.Combine(repositoriesRoot, "ss_fva")}; ss_wcf_fvan={Path.Combine(repositoriesRoot, "ss_wcf_fvan")}. Só os componentes classificados como change podem ser editados.");
-            text.AppendLine("Autorização funcional confirmada: tickets FVA/WCF podem usar SSBDFV_PD no CloudSS para o fluxo previsto, inclusive exportação pelo WCF. Antes de gravar, confirme endpoint/banco e se o cenário já existe. Limite gravação ao registro e ação previstos; sem DML manual remoto, migrations, limpeza ou exclusão sem autorização específica. Preserve Web.config e dados pessoais.");
+            text.AppendLine("Autorização funcional confirmada: tickets FVA/WCF podem usar SSBDFV_PD no CloudSS para o fluxo previsto, inclusive exportação pelo WCF. Na etapa testes, o hook permite sqlcmd somente com -S cloudss.dyndns.org,667 -E -d SSBDFV_PD e consultas SELECT; DML manual remoto, migrations, limpeza e exclusão continuam bloqueados. Gravações previstas devem ocorrer pelo fluxo aprovado do app/WCF, limitadas aos registros de teste. Confirme endpoint/banco e se o cenário já existe. Preserve Web.config e dados pessoais.");
             text.AppendLine("Teste integrado deve comprovar APK e DLL carregados das worktrees, endpoint, emulador e base sem segredos; confira instalação existente/upgrade SQLite, sincronização repetida, offline/timeout, troca de vendedor e variantes equivalentes no ERP.");
         }
         return text.ToString().Trim();
@@ -293,7 +299,7 @@ public sealed class HookProcessor(string dataRoot)
     }
     private static JsonObject? Read(string path)
     {
-        try { return JsonNode.Parse(File.ReadAllText(path)) as JsonObject; }
+        try { return JsonNode.Parse(SharedFileAccess.ReadAllText(path)) as JsonObject; }
         catch (FileNotFoundException) { return null; }
         catch (DirectoryNotFoundException) { return null; }
         catch (JsonException) { throw new InvalidDataException($"Não foi possível ler {Path.GetFileName(path)}; arquivo preservado."); }

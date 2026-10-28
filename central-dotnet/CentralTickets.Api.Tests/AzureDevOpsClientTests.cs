@@ -51,6 +51,11 @@ public sealed class AzureDevOpsClientTests : IDisposable
         Assert.Equal("166", preview.Suggested.Sprint);
         Assert.Equal("ss_fva", preview.Suggested.RepositoryId);
         Assert.Contains("pedido com kit", preview.Suggested.Scope, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Passos para reproduÃ§Ã£o", preview.Suggested.Scope, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Selecionar o kit e salvar", preview.Suggested.Scope, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("InformaÃ§Ãµes do sistema", preview.Suggested.Scope, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Android 15", preview.Suggested.Scope, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Validar o envio do pedido", preview.Suggested.Scope, StringComparison.OrdinalIgnoreCase);
         Assert.Single(preview.Attachments);
         Assert.Equal("evidencia.txt", preview.Attachments[0].Name);
         Assert.False(string.IsNullOrWhiteSpace(preview.PreviewId));
@@ -77,6 +82,49 @@ public sealed class AzureDevOpsClientTests : IDisposable
         Assert.Equal("ss_fva", record.RootElement.GetProperty("repositoryId").GetString());
         Assert.Equal("1900", record.RootElement.GetProperty("azure_source").GetProperty("id").ToString());
         Assert.Equal("ss_erp_tag1", record.RootElement.GetProperty("components")[0].GetProperty("repositoryId").GetString());
+        Assert.Contains("Selecionar o kit e salvar", record.RootElement.GetProperty("scope").GetString());
+        Assert.Contains("Android 15", record.RootElement.GetProperty("scope").GetString());
+    }
+
+    [Fact]
+    public async Task Import_cancelled_while_downloading_does_not_create_partial_ticket()
+    {
+        using var handler = new AzureHandler((request, _) => request.RequestUri!.AbsolutePath.Contains("attachments", StringComparison.OrdinalIgnoreCase)
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Encoding.UTF8.GetBytes("evidencia")) }
+            : JsonResponse(WorkItemJson()));
+        var client = CreateClient(handler);
+        var preview = await client.Preview("1900", default);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.Import(new AzureImportRequest(
+            "1900", preview.PreviewId, "FVA0351", "166", null, null, null,
+            "ss_fva", "claude", "feature", "no_commit", ["evidencia.txt"], true, null), cancellation.Token));
+
+        Assert.False(File.Exists(Path.Combine(_data, "tickets", "fva0351", "ticket.json")));
+        Assert.Empty(Directory.EnumerateDirectories(_references, ".azure-import-*"));
+    }
+
+    [Fact]
+    public async Task RetryAttachments_restores_missing_files_for_an_existing_ticket()
+    {
+        var profile = new CentralProfile(_data);
+        var writer = new TicketWriter(_data, _state, profile, _references);
+        var source = JsonSerializer.SerializeToElement(new { id = 1900, url = "https://dev.azure.com/sistemasunion/SSUnion/_workitems/edit/1900", organization = "sistemasunion", project = "SSUnion", importedAt = DateTimeOffset.UtcNow.ToString("O") });
+        writer.Create(new CreateTicketRequest("FVA0351", "166", "main", "Escopo de teste com mais de vinte caracteres.",
+            "FVA0351 - teste", "no_commit", "feature", "claude", "ss_fva", null,
+            ["evidencia.txt"], null, source));
+        using var handler = new AzureHandler((request, _) => request.RequestUri!.AbsolutePath.Contains("attachments", StringComparison.OrdinalIgnoreCase)
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Encoding.UTF8.GetBytes("evidencia")) }
+            : JsonResponse(WorkItemJson()));
+        var client = CreateClient(handler);
+
+        var result = await client.RetryAttachments("FVA0351", default);
+
+        Assert.Equal(1, result.Downloaded);
+        Assert.Empty(result.Missing);
+        Assert.Empty(result.Warnings);
+        Assert.Equal("evidencia", File.ReadAllText(Path.Combine(_references, "fva0351", "evidencia.txt")));
     }
 
     [Theory]
@@ -176,6 +224,9 @@ public sealed class AzureDevOpsClientTests : IDisposable
           "fields": {
             "System.Title": "FVA0351 - Salvar pedido com kit de venda",
             "System.Description": "<p>O pedido com kit deve ser salvo sem erro 0940.</p><p>Validar o envio do pedido e as regras de promoção.</p>",
+            "Microsoft.VSTS.Common.AcceptanceCriteria": "<ul><li>Pedido salvo sem erro.</li></ul>",
+            "Microsoft.VSTS.TCM.ReproSteps": "<p>Selecionar o kit e salvar o pedido.</p>",
+            "Microsoft.VSTS.TCM.SystemInfo": "<p>Android 15, vendedor 002.</p>",
             "System.State": "Approved",
             "System.Tags": "feature; Android",
             "System.IterationPath": "SSUnion\\Sprint 166"

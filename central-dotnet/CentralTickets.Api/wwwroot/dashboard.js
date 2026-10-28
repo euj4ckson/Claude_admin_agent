@@ -4,6 +4,12 @@ live.addEventListener('tickets', () => {
 });
 live.onerror = () => {};
 
+if (document.querySelector('[data-ticket-id]')) {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') location.reload();
+  });
+}
+
 const sidebar = document.querySelector('#ticket-sidebar');
 const sidebarToggle = document.querySelector('#sidebar-toggle');
 if (sidebar && sidebarToggle) {
@@ -50,9 +56,12 @@ if (environment) {
   });
 }
 
-document.querySelector('#sync-memory-home')?.addEventListener('click', async event => {
-  const button = event.currentTarget, feedback = document.querySelector('#home-feedback');
-  button.disabled = true; feedback.hidden = true;
+document.querySelector('#sync-memory-home-form')?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = document.querySelector('#sync-memory-home'), feedback = document.querySelector('#home-feedback');
+  button.disabled = true; button.textContent = 'Sincronizando...';
+  feedback.textContent = 'Verificando e enviando os aprendizados para o AI Memory...';
+  feedback.classList.remove('warning'); feedback.hidden = false;
   try {
     const response = await fetch('/api/memory-sync', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Central-Request': '1' }, body: '{}' });
     const result = await response.json().catch(() => ({}));
@@ -63,5 +72,5 @@ document.querySelector('#sync-memory-home')?.addEventListener('click', async eve
   } catch (error) {
     feedback.textContent = error.message;
     feedback.classList.add('warning'); feedback.hidden = false;
-  } finally { button.disabled = false; }
+  } finally { button.disabled = false; button.textContent = 'Atualizar conhecimento'; }
 });

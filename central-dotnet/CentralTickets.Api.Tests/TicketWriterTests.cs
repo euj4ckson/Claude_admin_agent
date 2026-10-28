@@ -10,6 +10,7 @@ public sealed class TicketWriterTests : IDisposable
     private readonly string _state;
     private readonly string _repository;
     private readonly string _claude;
+    private readonly string _references;
 
     public TicketWriterTests()
     {
@@ -17,6 +18,7 @@ public sealed class TicketWriterTests : IDisposable
         _state = Path.Combine(_root, "state");
         _repository = Path.Combine(_root, "git", "ss_erp_tag1");
         _claude = Path.Combine(_root, "claude.exe");
+        _references = Path.Combine(_root, "references");
         Directory.CreateDirectory(Path.Combine(_repository, ".git"));
         Directory.CreateDirectory(_data);
         File.WriteAllText(_claude, "test executable placeholder");
@@ -105,7 +107,54 @@ public sealed class TicketWriterTests : IDisposable
         Assert.Equal("concluido", JsonSerializer.SerializeToElement(result, new JsonSerializerOptions(JsonSerializerDefaults.Web)).GetProperty("stage").GetString());
     }
 
-    private TicketWriter CreateWriter() => new(_data, _state, new CentralProfile(_data));
+    [Fact]
+    public void Manual_deletion_archives_registration_and_attachments_for_recovery()
+    {
+        var writer = CreateWriter();
+        writer.Create(NewTicket("GER5803"));
+        var references = Path.Combine(_references, "ger5803");
+        Directory.CreateDirectory(references);
+        File.WriteAllText(Path.Combine(references, "evidencia.txt"), "referencia de teste");
+
+        var result = JsonSerializer.SerializeToElement(writer.DeleteByUser("GER5803"), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var archive = result.GetProperty("archivePath").GetString()!;
+
+        Assert.False(Directory.Exists(Path.Combine(_data, "tickets", "ger5803")));
+        Assert.False(Directory.Exists(references));
+        Assert.True(File.Exists(Path.Combine(archive, "ticket", "ticket.json")));
+        Assert.Equal("referencia de teste", File.ReadAllText(Path.Combine(archive, "references", "evidencia.txt")));
+        Assert.True(File.Exists(Path.Combine(archive, "manifest.json")));
+    }
+
+    [Fact]
+    public void Manual_deletion_refuses_tickets_with_development_state_or_active_session()
+    {
+        var writer = CreateWriter();
+        writer.Create(NewTicket("GER5804"));
+        var stateDirectory = Path.Combine(_state, "ss_erp_tag1", "ger5804");
+        Directory.CreateDirectory(stateDirectory);
+        File.WriteAllText(Path.Combine(stateDirectory, "estado.json"), "{\"stage\":\"implementacao\"}");
+
+        var stateError = Assert.Throws<TicketOperationException>(() => writer.DeleteByUser("GER5804"));
+
+        Assert.Equal(409, stateError.StatusCode);
+        Assert.True(File.Exists(Path.Combine(_data, "tickets", "ger5804", "ticket.json")));
+
+        Directory.Delete(stateDirectory, recursive: true);
+        File.WriteAllText(Path.Combine(_data, "tickets", "ger5804", "runtime.json"), JsonSerializer.Serialize(new
+        {
+            phase = "running",
+            pid = Environment.ProcessId,
+            childPid = 0
+        }));
+
+        var activeError = Assert.Throws<TicketOperationException>(() => writer.DeleteByUser("GER5804"));
+
+        Assert.Equal(409, activeError.StatusCode);
+        Assert.True(File.Exists(Path.Combine(_data, "tickets", "ger5804", "ticket.json")));
+    }
+
+    private TicketWriter CreateWriter() => new(_data, _state, new CentralProfile(_data), _references);
 
     private static CreateTicketRequest NewTicket(string id) => new(
         id,

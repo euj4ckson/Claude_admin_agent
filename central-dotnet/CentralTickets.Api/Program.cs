@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http.Features;
 using CentralTickets.Api;
 
@@ -31,12 +32,21 @@ var worktreesBaseRoot = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_WORK
 var accessToken = Environment.GetEnvironmentVariable("CENTRAL_TICKETS_DOTNET_TOKEN")
     ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
 builder.Services.AddSingleton(new LocalAccess(accessToken));
+builder.Services.AddAntiforgery(options =>
+{
+    options.FormFieldName = "__RequestVerificationToken";
+    options.Cookie.Name = "central_dotnet_csrf";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.None;
+});
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient("azure", client => client.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddHttpClient("azure-attachments", client => client.Timeout = TimeSpan.FromMinutes(3));
 var profile = new CentralProfile(dataRoot);
 builder.Services.AddSingleton(profile);
 builder.Services.AddSingleton(new TicketCatalog(dataRoot, stateBaseRoot, referenceRoot));
-builder.Services.AddSingleton(new TicketWriter(dataRoot, stateBaseRoot, profile));
+builder.Services.AddSingleton(new TicketWriter(dataRoot, stateBaseRoot, profile, referenceRoot));
 builder.Services.AddSingleton(new GitWorktreeService(dataRoot, stateBaseRoot, worktreesBaseRoot, profile));
 builder.Services.AddSingleton<SessionService>(services => new(dataRoot, profile, services.GetRequiredService<GitWorktreeService>()));
 builder.Services.AddSingleton<AzureDevOpsClient>(services => new(
@@ -59,6 +69,20 @@ app.Use(async (context, next) =>
     {
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await context.Response.WriteAsJsonAsync(new { error = error.Message });
+    }
+    catch (Exception error)
+    {
+        var incidentId = context.TraceIdentifier;
+        app.Logger.LogError(error, "Unhandled request {Method} {Path}; incident {IncidentId}.",
+            context.Request.Method, context.Request.Path, incidentId);
+        if (context.Response.HasStarted) throw;
+        context.Response.Clear();
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await context.Response.WriteAsJsonAsync(new
+        {
+            error = $"Falha interna ao processar a solicitacao. Referencia: {incidentId}",
+            incidentId
+        });
     }
 });
 app.Use(async (context, next) =>
@@ -108,7 +132,10 @@ app.Use(async (context, next) =>
         return;
     }
 
+    var isNativeActionForm = context.Request.Path == "/memory-sync"
+        || Regex.IsMatch(context.Request.Path.Value ?? "", "^/tickets/[A-Za-z0-9]+/(start|memory-sync)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     if (HttpMethods.IsPost(context.Request.Method)
+        && !isNativeActionForm
         && (!string.Equals(context.Request.Headers.Origin, $"http://{context.Request.Host}", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(context.Request.Headers["X-Central-Request"], "1", StringComparison.Ordinal)))
     {
@@ -117,9 +144,31 @@ app.Use(async (context, next) =>
         return;
     }
 
+    if (HttpMethods.IsPost(context.Request.Method) && isNativeActionForm)
+    {
+        try
+        {
+            await context.RequestServices.GetRequiredService<Microsoft.AspNetCore.Antiforgery.IAntiforgery>()
+                .ValidateRequestAsync(context);
+        }
+        catch (Microsoft.AspNetCore.Antiforgery.AntiforgeryValidationException)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(new { error = "FormulÃ¡rio expirado. Atualize a pÃ¡gina e tente novamente." });
+            return;
+        }
+    }
+
     await next();
 });
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        context.Context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+        context.Context.Response.Headers.Pragma = "no-cache";
+    }
+});
 
 app.MapGet("/health", () => Results.Ok(new
 {
@@ -128,7 +177,7 @@ app.MapGet("/health", () => Results.Ok(new
     pid = Environment.ProcessId
 }));
 
-app.MapGet("/", (HttpRequest request, TicketCatalog catalog) =>
+app.MapGet("/", (HttpRequest request, TicketCatalog catalog, Microsoft.AspNetCore.Antiforgery.IAntiforgery antiforgery) =>
 {
     var stage = request.Query["stage"].FirstOrDefault() ?? "active";
     if (stage is not ("active" or "attention" or "done" or "all")) stage = "active";
@@ -138,15 +187,20 @@ app.MapGet("/", (HttpRequest request, TicketCatalog catalog) =>
     var tickets = catalog.List(stage, query, repository, agent, 500);
     var all = catalog.List("all", null, null, null, 500);
     var profile = request.HttpContext.RequestServices.GetRequiredService<CentralProfile>();
-    return Results.Content(TicketPageRenderer.Index(tickets, all, stage, query, profile.Repositories(), repository, agent), "text/html; charset=utf-8");
+    var memoryMessage = request.Query["memoryMessage"].FirstOrDefault();
+    var memoryError = request.Query["memoryError"] == "1";
+    var antiforgeryToken = antiforgery.GetAndStoreTokens(request.HttpContext).RequestToken;
+    return Results.Content(TicketPageRenderer.Index(tickets, all, stage, query, profile.Repositories(), repository, agent, memoryMessage, memoryError, antiforgeryToken), "text/html; charset=utf-8");
 });
 
-app.MapGet("/tickets/{id}", (string id, TicketCatalog catalog) =>
+app.MapGet("/tickets/{id}", (string id, HttpRequest request, TicketCatalog catalog, Microsoft.AspNetCore.Antiforgery.IAntiforgery antiforgery) =>
 {
     var ticket = catalog.GetDetails(id);
+    var sessionMessage = request.Query["sessionMessage"].FirstOrDefault();
+    var sessionError = request.Query["sessionError"] == "1";
     return ticket is null
         ? Results.Content(TicketPageRenderer.NotFound(id), "text/html; charset=utf-8", statusCode: StatusCodes.Status404NotFound)
-        : Results.Content(TicketPageRenderer.Details(ticket), "text/html; charset=utf-8");
+        : Results.Content(TicketPageRenderer.Details(ticket, sessionMessage, sessionError, antiforgery.GetAndStoreTokens(request.HttpContext).RequestToken), "text/html; charset=utf-8");
 });
 
 app.MapGet("/usage", () => Results.Content(TicketPageRenderer.Usage(), "text/html; charset=utf-8"));
@@ -181,6 +235,7 @@ app.MapPost("/api/tickets/{id}/registration", (string id, RegistrationUpdate inp
 });
 
 app.MapPost("/api/tickets/{id}/complete", (string id, TicketWriter writer) => Results.Ok(writer.CompleteByUser(id)));
+app.MapPost("/api/tickets/{id}/delete", (string id, TicketWriter writer) => Results.Ok(writer.DeleteByUser(id)));
 app.MapPost("/api/tickets/{id}/attachments", async (string id, HttpRequest request, TicketCatalog catalog, TicketWriter writer, CancellationToken cancellationToken) =>
 {
     var ticket = catalog.GetDetails(id);
@@ -240,8 +295,40 @@ app.MapPost("/api/tickets/{id}/memory-sync", async (string id, TicketCatalog cat
     var ticket = catalog.GetDetails(id);
     return ticket is null ? Results.NotFound(new { error = "Ticket não encontrado." }) : Results.Ok(await memory.SyncTicket(ticket, cancellationToken));
 });
-app.MapPost("/api/tickets/{id}/start", async (string id, SessionService sessions, CancellationToken cancellationToken) =>
-    Results.Ok(await sessions.Start(id, cancellationToken)));
+app.MapPost("/api/tickets/{id}/start", async (string id, HttpRequest request, SessionService sessions, CancellationToken cancellationToken) =>
+    Results.Ok(await sessions.Start(id, cancellationToken, request.Query["fresh"] == "1")));
+app.MapPost("/tickets/{id}/start", async (string id, HttpRequest request, SessionService sessions, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await sessions.Start(id, cancellationToken, request.Query["fresh"] == "1");
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(result));
+        var message = document.RootElement.TryGetProperty("message", out var value) ? value.GetString() : null;
+        return Results.Redirect($"/tickets/{Uri.EscapeDataString(id)}?sessionMessage={Uri.EscapeDataString(message ?? "Solicitação de início enviada à Central.")}");
+    }
+    catch (TicketOperationException error)
+    {
+        return Results.Redirect($"/tickets/{Uri.EscapeDataString(id)}?sessionError=1&sessionMessage={Uri.EscapeDataString(error.Message)}");
+    }
+});
+app.MapPost("/tickets/{id}/memory-sync", async (string id, TicketCatalog catalog, AiMemoryService memory, CancellationToken cancellationToken) =>
+{
+    var ticket = catalog.GetDetails(id);
+    if (ticket is null) return Results.Redirect($"/tickets/{Uri.EscapeDataString(id)}?sessionError=1&sessionMessage={Uri.EscapeDataString("Ticket não encontrado.")}");
+    var result = await memory.SyncTicket(ticket, cancellationToken);
+    var message = result["detail"]?.GetValue<string>() ?? "Sincronização registrada.";
+    var error = result["remote"]?.GetValue<string>() != "synced";
+    return Results.Redirect($"/tickets/{Uri.EscapeDataString(id)}?sessionError={(error ? "1" : "0")}&sessionMessage={Uri.EscapeDataString(message)}");
+});
+app.MapPost("/memory-sync", async (TicketCatalog catalog, AiMemoryService memory, CancellationToken cancellationToken) =>
+{
+    var result = await memory.SyncDelivered(catalog, cancellationToken);
+    var sent = result["sent"]?.GetValue<int>() ?? 0;
+    var pending = result["pending"]?.GetValue<int>() ?? 0;
+    var current = result["alreadyCurrent"]?.GetValue<int>() ?? 0;
+    var message = $"AI Memory: {sent} enviado(s), {pending} aguardando nova tentativa; {current} já atualizado(s).";
+    return Results.Redirect($"/?memoryError={(pending > 0 ? "1" : "0")}&memoryMessage={Uri.EscapeDataString(message)}");
+});
 app.MapPost("/api/tickets/{id}/focus", (string id, SessionService sessions) => Results.Ok(sessions.Focus(id)));
 app.MapGet("/api/tickets/{id}/metrics", (string id, TicketCatalog catalog) =>
 {
@@ -336,6 +423,8 @@ app.MapPost("/api/azure/import", async (AzureImportRequest input, AzureDevOpsCli
     var result = await azure.Import(input, cancellationToken);
     return Results.Json(result, statusCode: result.Warnings.Count == 0 ? StatusCodes.Status201Created : 207);
 });
+app.MapPost("/api/tickets/{id}/attachments/retry", async (string id, AzureDevOpsClient azure, CancellationToken cancellationToken) =>
+    Results.Ok(await azure.RetryAttachments(id, cancellationToken)));
 
 var launchFile = Path.Combine(dataRoot, "launch-dotnet.json");
 Directory.CreateDirectory(dataRoot);

@@ -76,10 +76,13 @@ public sealed class HookPolicy(string dataRoot)
         if (shared || critical)
         {
             if (approval is null) return Deny("Compilação e testes aguardam aprovação do plano.");
-            if (GetBool(args, "run_in_background")) return Deny("Execute compilação e testes de forma síncrona para manter a reserva até a conclusão.");
             if (!critical) return Deny("Antes de compilar ou testar, registre stage=compilacao ou stage=testes no estado.");
-            if (Regex.IsMatch(command, @"\bsqlcmd(?:\.exe)?\b", RegexOptions.IgnoreCase) && !SqlTargetAllowed(id, stage, command)) return Deny("SQLCMD deve usar -S localhost -E; a exceção temporária CMX0223 é limitada ao banco de teste documentado.");
-            if (IsolatedExecution(ticket, id, command)) return Allow("Execução isolada na worktree/scratch ou banco exclusivo do ticket.");
+            var isSqlCmd = Regex.IsMatch(command, @"\bsqlcmd(?:\.exe)?\b", RegexOptions.IgnoreCase);
+            if (isSqlCmd && !SqlTargetAllowed(ticket, id, stage, command)) return Deny("SQLCMD usa apenas localhost -E; FVA pode consultar SSBDFV_PD no CloudSS somente com SELECT na etapa testes. CMX0223 mantém sua exceção específica.");
+            var isolated = IsolatedExecution(ticket, id, command)
+                || (isSqlCmd && IsFvaTicket(ticket, id) && stage == "testes" && SqlTargetAllowed(ticket, id, stage, command));
+            if (GetBool(args, "run_in_background") && !isolated) return Deny("Background liberado para execução isolada. Esta operação usa recurso compartilhado; rode síncrona para manter a reserva até o término.");
+            if (isolated) return Allow("Execução isolada; background permitido sem reservar recursos compartilhados.");
             var owner = AcquireExecution(id, runId, IntValue(runtime, "pid"), GetString(input, "tool_use_id"));
             if (owner is not null) return Deny($"Operação compartilhada em execução por {owner}. Use build em OutputPath isolado ou banco SSBD_TESTE_{id}; não compartilhe instalação ou banco em paralelo.");
             var safeBuild = Regex.IsMatch(command, @"(?:MSBuild(?:\.exe)?|msbuild)\b[\s\S]*\/t\s*:\s*Build\b", RegexOptions.IgnoreCase)
@@ -260,13 +263,67 @@ public sealed class HookPolicy(string dataRoot)
     private bool RuntimeChildAlive(string? id) => !string.IsNullOrWhiteSpace(id) && IsAlive(IntValue(Read(Path.Combine(TicketDir(id), "runtime.json")), "childPid"));
     private static bool IsAlive(int? pid) { if (pid is null or <= 0) return false; try { using var process = Process.GetProcessById(pid.Value); return !process.HasExited; } catch (ArgumentException) { return false; } catch (InvalidOperationException) { return false; } }
 
-    private bool SqlTargetAllowed(string id, string? stage, string command)
+    private bool SqlTargetAllowed(JsonObject ticket, string id, string? stage, string command)
     {
         var targets = Regex.Matches(command, "(?:^|\\s)-S\\s*[\\\"']?([^\\s\\\"';|]+)", RegexOptions.IgnoreCase).Select(match => match.Groups[1].Value.ToLowerInvariant()).ToArray();
         var databases = Regex.Matches(command, "(?:^|\\s)-d\\s*[\\\"']?([^\\s\\\"';|]+)", RegexOptions.IgnoreCase).Select(match => match.Groups[1].Value.ToLowerInvariant()).ToArray();
         var integrated = Regex.IsMatch(command, @"(?:^|\s)-E(?:\s|$)", RegexOptions.IgnoreCase);
         if (targets.Length == 1 && targets[0] == "localhost" && integrated) return true;
-        return id == "CMX0223" && stage == "testes" && integrated && targets.SequenceEqual(["cloudss.dyndns.org,667"]) && databases.SequenceEqual(["ssbdlordpampa_pd"]);
+        if (id == "CMX0223" && stage == "testes" && integrated && targets.SequenceEqual(["cloudss.dyndns.org,667"]) && databases.SequenceEqual(["ssbdlordpampa_pd"])) return true;
+        return IsFvaTicket(ticket, id)
+            && stage == "testes"
+            && integrated
+            && !Regex.IsMatch(command, @"(?:^|\s)-[UP](?:\s|$)", RegexOptions.IgnoreCase)
+            && targets.SequenceEqual(["cloudss.dyndns.org,667"])
+            && databases.SequenceEqual(["ssbdfv_pd"])
+            && IsReadOnlyFvaSql(command, id);
+    }
+
+    private bool IsReadOnlyFvaSql(string command, string id)
+    {
+        if (!Regex.IsMatch(command, @"^\s*sqlcmd(?:\.exe)?\s", RegexOptions.IgnoreCase)) return false;
+        if (HasShellControlOutsideQuotes(command)) return false;
+        var queries = CapturePathArguments(command, @"(?:^|\s)-[Qq]\s+(?:""([^""\r\n]*)""|'([^'\r\n]*)'|([^\s""']+))");
+        var files = CapturePathArguments(command, @"(?:^|\s)-i\s+(?:""([^""\r\n]+)""|'([^'\r\n]+)'|([^\s""']+))");
+        if (queries.Length + files.Length != 1) return false;
+
+        string sql;
+        if (queries.Length == 1) sql = queries[0];
+        else
+        {
+            var ticket = Read(Path.Combine(TicketDir(id), "ticket.json"));
+            if (ticket is null) return false;
+            var scratch = Path.Combine(Path.GetDirectoryName(StateFile(ticket, id))!, "scratch");
+            var file = Path.GetFullPath(files[0]);
+            if (!Inside(scratch, file) || !File.Exists(file)) return false;
+            sql = File.ReadAllText(file);
+        }
+
+        // Direct SQL access to this remote database is read-only; planned writes go through the app/WCF flow.
+        var normalized = Regex.Replace(sql, @"'(?:''|[^'])*'|--[^\r\n]*|/\*[\s\S]*?\*/", " ");
+        if (!Regex.IsMatch(normalized, @"\bSELECT\b", RegexOptions.IgnoreCase)) return false;
+        if (Regex.IsMatch(normalized, @"\b(?:INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC(?:UTE)?|USE|GRANT|REVOKE|DENY|BACKUP|RESTORE|DBCC|BULK|WAITFOR|SHUTDOWN|OPENROWSET|OPENDATASOURCE|OPENQUERY|INTO|NEXT\s+VALUE\s+FOR|XP_\w+)\b", RegexOptions.IgnoreCase)) return false;
+        return !Regex.IsMatch(normalized, @"\b\w+\s*\.\s*\w+\s*\.\s*\w+\s*\.\s*\w+\b", RegexOptions.IgnoreCase);
+    }
+
+    private static bool IsFvaTicket(JsonObject ticket, string id) =>
+        Regex.IsMatch(id, @"^FVA\d+$", RegexOptions.IgnoreCase)
+        || GetString(ticket, "repositoryId") is "ss_fva" or "ss_wcf_fvan";
+
+    private static bool HasShellControlOutsideQuotes(string command)
+    {
+        var quote = '\0';
+        foreach (var current in command)
+        {
+            if (quote != '\0')
+            {
+                if (current == quote) quote = '\0';
+                continue;
+            }
+            if (current is '"' or '\'') { quote = current; continue; }
+            if (current is ';' or '|' or '&' or '`' or '$' or '<' or '>' or '(' or ')' or '{' or '}' or '\n' or '\r') return true;
+        }
+        return quote != '\0';
     }
 
     private bool IsolatedExecution(JsonObject ticket, string id, string command)
@@ -522,7 +579,7 @@ public sealed class HookPolicy(string dataRoot)
     private static string? GetString(JsonObject? obj, string key) => obj?[key] is JsonValue value && value.TryGetValue<string>(out var result) ? result : null;
     private static int? IntValue(JsonObject? obj, string key) => obj?[key] is JsonValue value && value.TryGetValue<int>(out var result) ? result : null;
     private static bool GetBool(JsonObject? obj, string key) => obj?[key] is JsonValue value && value.TryGetValue<bool>(out var result) && result;
-    private static JsonObject? Read(string path) { try { return JsonNode.Parse(File.ReadAllText(path)) as JsonObject; } catch (FileNotFoundException) { return null; } catch (DirectoryNotFoundException) { return null; } catch (JsonException) { throw new InvalidDataException($"Não foi possível ler {Path.GetFileName(path)}; arquivo preservado."); } }
+    private static JsonObject? Read(string path) { try { return JsonNode.Parse(SharedFileAccess.ReadAllText(path)) as JsonObject; } catch (FileNotFoundException) { return null; } catch (DirectoryNotFoundException) { return null; } catch (JsonException) { throw new InvalidDataException($"Não foi possível ler {Path.GetFileName(path)}; arquivo preservado."); } }
     private static void TryDelete(string path) { try { File.Delete(path); } catch (IOException) { } }
     private static string ValidateId(string id) => Regex.IsMatch(id, "^[A-Z]{2,8}[0-9]{2,8}$", RegexOptions.IgnoreCase) ? id.ToUpperInvariant() : throw new InvalidDataException("Código de ticket inválido.");
 }

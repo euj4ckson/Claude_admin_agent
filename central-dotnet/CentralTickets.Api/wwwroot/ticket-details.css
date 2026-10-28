@@ -1,0 +1,63 @@
+.scope-accordion {
+  min-width: 0;
+}
+
+.scope-accordion-summary {
+  justify-content: space-between;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.scope-accordion-summary::-webkit-details-marker {
+  display: none;
+}
+
+.scope-accordion-summary::after {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  margin: 0 4px 4px 16px;
+  border-right: 2px solid #7b899a;
+  border-bottom: 2px solid #7b899a;
+  content: "";
+  transform: rotate(45deg);
+  transition: transform .16s ease;
+}
+
+.scope-accordion:not([open]) > .scope-accordion-summary::after {
+  margin-bottom: 0;
+  transform: rotate(-45deg);
+}
+
+.scope-accordion-summary:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--orange);
+  outline-offset: 4px;
+}
+
+.danger {
+  border: 1px solid #f0d2cf;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: #fff7f6;
+  color: #a43d35;
+  font: 600 12px "DM Sans", Segoe UI, sans-serif;
+  cursor: pointer;
+}
+
+.danger:hover {
+  border-color: #d9a8a1;
+  background: #fff0ed;
+}
+
+.danger:focus-visible {
+  outline: 2px solid #a43d35;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scope-accordion-summary::after {
+    transition: none;
+  }
+}

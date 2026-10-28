@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using CentralTickets.SessionRunner;
 
 if (args.Length != 3) return 2;
 var (dataRoot, id, runId) = (args[0], args[1].ToUpperInvariant(), args[2]);
@@ -25,16 +26,18 @@ var executable = ResolveExecutable(agent, config);
 if (executable is null) { Console.Error.WriteLine($"Executável de {agent} não encontrado."); return FinishError($"Executável de {agent} não encontrado."); }
 
 var contextFile = Path.Combine(dir, "session-context.txt");
-var promptFile = Path.Combine(dir, "entrada.md");
-if (!File.Exists(contextFile) || !File.Exists(promptFile)) return FinishError("Contexto da sessão ausente.");
 var sessionId = ticket["sessionId"]?.GetValue<string>() ?? Guid.NewGuid().ToString();
+var freshSession = ticket["freshSessionId"]?.GetValue<string>() == sessionId;
+var promptFile = Path.Combine(dir, freshSession ? "session-checkpoint.md" : "entrada.md");
+if (!File.Exists(contextFile) || !File.Exists(promptFile)) return FinishError("Contexto da sessão ausente.");
 var sessionStarted = ticket["sessionStarted"]?.GetValue<bool>() == true;
+var firstPromptSubmitted = ticket["firstPromptSubmitted"]?.GetValue<bool>() == true
+    || (!freshSession && Read(Path.Combine(dir, "metrics.json"))?["totals"]?["prompts"]?.GetValue<int>() > 0);
+var shouldSendEntryPrompt = ClaudeSessionPolicy.ShouldSendEntryPrompt(sessionStarted, firstPromptSubmitted);
 var context = File.ReadAllText(contextFile);
 var prompt = File.ReadAllText(promptFile);
 var stateRoot = config?["state_base_root"]?.GetValue<string>() ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "ticket-state");
 var stateFile = Path.Combine(stateRoot, ticket["repositoryId"]?.GetValue<string>() ?? "", id.ToLowerInvariant(), "estado.json");
-ticket["sessionStarted"] = true;
-WriteJson(ticketFile, ticket);
 var psi = new ProcessStartInfo(executable) { WorkingDirectory = worktree, UseShellExecute = false };
 psi.Environment["CENTRAL_TICKETS_DATA"] = dataRoot;
 psi.Environment["CENTRAL_TICKET_ID"] = id;
@@ -42,7 +45,7 @@ psi.Environment["CENTRAL_TICKET_RUN"] = runId;
 psi.Environment["CENTRAL_TICKET_AGENT"] = agent;
 if (agent == "claude")
 {
-    var background = sessionStarted ? await FindBackgroundSession(executable, sessionId) : null;
+    var background = !shouldSendEntryPrompt ? await FindBackgroundSession(executable, sessionId) : null;
     if (background is not null) Add("attach", background);
     else
     {
@@ -55,7 +58,11 @@ if (agent == "claude")
         Add("--add-dir", Path.GetDirectoryName(Path.GetFullPath(stateFile))!);
         var references = Path.Combine(config?["references_root"]?.GetValue<string>() ?? "", id.ToLowerInvariant());
         if (Directory.Exists(references)) Add("--add-dir", references);
-        if (sessionStarted) Add("--resume", sessionId);
+        if (sessionStarted)
+        {
+            Add("--resume", sessionId);
+            if (shouldSendEntryPrompt) Add(prompt);
+        }
         else { Add("--session-id", sessionId); Add(prompt); }
     }
 }
@@ -128,7 +135,31 @@ static string? ResolveExecutable(string agent, JsonObject? config)
     return null;
 }
 static JsonObject? Read(string path) { try { return JsonNode.Parse(File.ReadAllText(path)) as JsonObject; } catch (IOException) { return null; } catch (JsonException) { return null; } }
-static void WriteJson(string path, JsonNode value) { var temp = path + ".tmp-" + Guid.NewGuid().ToString("N"); File.WriteAllText(temp, value.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); File.Move(temp, path, true); }
+static void WriteJson(string path, JsonNode value)
+{
+    var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
+    try
+    {
+        File.WriteAllText(temp, value.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), new System.Text.UTF8Encoding(false));
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                if (File.Exists(path)) File.Replace(temp, path, null);
+                else File.Move(temp, path);
+                return;
+            }
+            catch (Exception error) when (attempt < 7 && (error is IOException or UnauthorizedAccessException))
+            {
+                Thread.Sleep(25 * (attempt + 1));
+            }
+        }
+    }
+    finally
+    {
+        try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+}
 static async Task<string?> FindBackgroundSession(string executable, string sessionId)
 {
     try

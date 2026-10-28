@@ -4,11 +4,12 @@ using System.Text.RegularExpressions;
 
 namespace CentralTickets.Api;
 
-public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfile profile)
+public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfile profile, string? referenceRoot = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly string _dataRoot = dataRoot;
     private readonly string _stateRoot = stateRoot;
+    private readonly string _referenceRoot = referenceRoot ?? profile.GetString("references_root") ?? Path.Combine(dataRoot, "references");
     private readonly CentralProfile _profile = profile;
 
     public JsonElement Create(CreateTicketRequest input)
@@ -34,7 +35,7 @@ public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfi
             throw new TicketOperationException("Este ticket já possui cadastro ou estado do coordenador. O trabalho existente foi preservado.", 409);
 
         Directory.CreateDirectory(ticketDirectory);
-        using var creationLock = AcquireLock(Path.Combine(ticketDirectory, ".write.lock"));
+        using var creationLock = AcquireTicketLock(id);
         if (File.Exists(Path.Combine(ticketDirectory, "ticket.json")) || File.Exists(Path.Combine(stateDirectory, "estado.json")))
             throw new TicketOperationException("Este ticket já possui cadastro ou estado do coordenador. O trabalho existente foi preservado.", 409);
 
@@ -76,7 +77,7 @@ public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfi
         var ticketDirectory = TicketDirectory(id);
         var ticketFile = Path.Combine(ticketDirectory, "ticket.json");
         var current = ReadObject(ticketFile) ?? throw new TicketOperationException("Ticket não encontrado.", 404);
-        using var writeLock = AcquireLock(Path.Combine(ticketDirectory, ".write.lock"));
+        using var writeLock = AcquireTicketLock(id);
 
         var repository = ResolveRepository(input.Repository ?? GetString(current, "repositoryId") ?? GetString(current, "repository") ?? "");
         var agent = ValidateAgent(input.Agent ?? GetString(current, "agent") ?? "claude");
@@ -136,7 +137,7 @@ public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfi
         id = ValidateId(id);
         var directory = TicketDirectory(id);
         var file = Path.Combine(directory, "ticket.json");
-        using var writeLock = AcquireLock(Path.Combine(directory, ".write.lock"));
+        using var writeLock = AcquireTicketLock(id);
         var current = ReadObject(file) ?? throw new TicketOperationException("Ticket não encontrado.", 404);
         var existing = current["attachments"] is JsonArray values
             ? values.OfType<JsonValue>().Where(value => value.TryGetValue<string>(out _)).Select(value => value.GetValue<string>()).ToArray()
@@ -153,7 +154,7 @@ public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfi
     {
         id = ValidateId(id);
         var ticketDirectory = TicketDirectory(id);
-        using var writeLock = AcquireLock(Path.Combine(ticketDirectory, ".write.lock"));
+        using var writeLock = AcquireTicketLock(id);
         var ticketFile = Path.Combine(ticketDirectory, "ticket.json");
         var ticket = ReadObject(ticketFile) ?? throw new TicketOperationException("Ticket não encontrado.", 404);
         var stateFile = Path.Combine(StateDirectory(GetString(ticket, "repositoryId") ?? Path.GetFileName(GetString(ticket, "repository") ?? ""), id), "estado.json");
@@ -189,6 +190,61 @@ public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfi
         WriteJson(ticketFile, ticket);
         AppendEvent(id, "entrega_manual", "Encerramento manual solicitado pelo usuário; evidências e pendências preservadas.");
         return new { id, stage = "concluido", alreadyCompleted = false };
+    }
+
+    public object DeleteByUser(string id)
+    {
+        id = ValidateId(id);
+        var ticketDirectory = TicketDirectory(id);
+        using var writeLock = AcquireTicketLock(id);
+        var ticketFile = Path.Combine(ticketDirectory, "ticket.json");
+        var ticket = ReadObject(ticketFile) ?? throw new TicketOperationException("Ticket nao encontrado.", 404);
+        var repositoryId = GetString(ticket, "repositoryId") ?? Path.GetFileName(GetString(ticket, "repository") ?? "");
+        var stateDirectory = StateDirectory(repositoryId, id);
+        var runtime = ReadObject(Path.Combine(ticketDirectory, "runtime.json"));
+        var phase = GetString(runtime, "phase");
+        var processActive = IsAlive(GetInt(runtime, "pid")) || IsAlive(GetInt(runtime, "childPid"));
+        if (processActive || phase is "starting" or "running" or "uncertain"
+            || File.Exists(Path.Combine(ticketDirectory, "active.lock")))
+            throw new TicketOperationException("Feche a conversa do agente antes de excluir este ticket.", 409);
+        if (GetBool(ticket, "prepared")
+            || !string.IsNullOrWhiteSpace(GetString(ticket, "branch"))
+            || !string.IsNullOrWhiteSpace(GetString(ticket, "worktree"))
+            || Directory.Exists(stateDirectory))
+            throw new TicketOperationException("Este ticket ja possui desenvolvimento ou evidencias. Conclua-o ou preserve esse trabalho antes de excluir.", 409);
+
+        var referencesDirectory = Path.GetFullPath(Path.Combine(_referenceRoot, id.ToLowerInvariant()));
+        var referenceRootFull = Path.GetFullPath(_referenceRoot);
+        if (!referencesDirectory.StartsWith(referenceRootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new TicketOperationException("A pasta de anexos esta fora da raiz configurada; o ticket foi preservado.", 403);
+
+        var archiveDirectory = Path.Combine(_dataRoot, "archive", "deleted", $"{id}-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}");
+        var archivedTicket = Path.Combine(archiveDirectory, "ticket");
+        var archivedReferences = Path.Combine(archiveDirectory, "references");
+        Directory.CreateDirectory(archiveDirectory);
+        try
+        {
+            AppendEvent(id, "exclusao_manual", "Ticket removido da Central por solicitacao do usuario; cadastro e anexos arquivados para recuperacao.");
+            Directory.Move(ticketDirectory, archivedTicket);
+            if (Directory.Exists(referencesDirectory)) Directory.Move(referencesDirectory, archivedReferences);
+            WriteJson(Path.Combine(archiveDirectory, "manifest.json"), new
+            {
+                id,
+                title = GetString(ticket, "title"),
+                deletedAt = DateTimeOffset.UtcNow.ToString("O"),
+                ticketArchive = archivedTicket,
+                referencesArchive = Directory.Exists(archivedReferences) ? archivedReferences : null
+            });
+        }
+        catch
+        {
+            if (Directory.Exists(archivedReferences) && !Directory.Exists(referencesDirectory)) Directory.Move(archivedReferences, referencesDirectory);
+            if (Directory.Exists(archivedTicket) && !Directory.Exists(ticketDirectory)) Directory.Move(archivedTicket, ticketDirectory);
+            if (Directory.Exists(archiveDirectory) && !Directory.EnumerateFileSystemEntries(archiveDirectory).Any()) Directory.Delete(archiveDirectory);
+            throw;
+        }
+
+        return new { id, archived = true, archivePath = archiveDirectory };
     }
 
     private CentralRepository ResolveRepository(string value) => _profile.ResolveRepository(value)
@@ -239,6 +295,13 @@ public sealed class TicketWriter(string dataRoot, string stateRoot, CentralProfi
     }
 
     private string TicketDirectory(string id) => Path.Combine(_dataRoot, "tickets", id.ToLowerInvariant());
+
+    private TicketFileLock AcquireTicketLock(string id)
+    {
+        var lockDirectory = Path.Combine(_dataRoot, "ticket-locks");
+        Directory.CreateDirectory(lockDirectory);
+        return AcquireLock(Path.Combine(lockDirectory, id.ToLowerInvariant() + ".lock"));
+    }
 
     private void AppendEvent(string id, string type, string message)
     {

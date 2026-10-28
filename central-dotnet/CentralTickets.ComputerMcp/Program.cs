@@ -91,6 +91,48 @@ async Task<JsonObject> Call(JsonObject? args)
     {
         var milliseconds = Math.Clamp(RequiredInt(input, "milliseconds"), 100, 10_000); await Task.Delay(milliseconds); return TextResult("Aguardado.");
     }
+    if (name == "computer_wait_for_title")
+    {
+        var contains = input["contains"]?.GetValue<string>()?.Trim() ?? "";
+        if (contains.Length is 0 or > 120) throw new InvalidOperationException("Informe parte do título da janela (até 120 caracteres).");
+        var timeout = Math.Clamp(RequiredInt(input, "timeoutMilliseconds"), 100, 20_000);
+        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(contains));
+        var script = $"Add-Type @'\nusing System;using System.Text;using System.Runtime.InteropServices;public static class CentralWaitWindow{{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\",CharSet=CharSet.Unicode)]public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);}}\n'@;$needle=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'));$clock=[Diagnostics.Stopwatch]::StartNew();do{{$title=New-Object Text.StringBuilder 512;[void][CentralWaitWindow]::GetWindowText([CentralWaitWindow]::GetForegroundWindow(),$title,$title.Capacity);if($title.ToString().IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -ge 0){{Write-Output $title.ToString();exit 0}};Start-Sleep -Milliseconds 300}}while($clock.ElapsedMilliseconds -lt {timeout});Write-Output '__CENTRAL_TIMEOUT__'";
+        var title = await RunPowerShell(script);
+        if (title == "__CENTRAL_TIMEOUT__") throw new InvalidOperationException("Janela esperada não apareceu no prazo.");
+        return TextResult(JsonSerializer.Serialize(new { activeWindow = title }));
+    }
+    if (name == "computer_sequence")
+    {
+        var expectedTitle = input["expectedWindowTitle"]?.GetValue<string>()?.Trim() ?? "";
+        var steps = input["steps"] as JsonArray;
+        if (expectedTitle.Length is 0 or > 120 || steps is null || steps.Count is < 1 or > 10)
+            throw new InvalidOperationException("Informe o título esperado e de 1 a 10 passos.");
+        for (var index = 0; index < steps.Count; index++)
+        {
+            if (steps[index] is not JsonObject step
+                || step["action"]?.GetValue<string>() is not ("computer_click" or "computer_key" or "computer_type" or "computer_wait")
+                || step["arguments"] is not JsonObject)
+                throw new InvalidOperationException($"Passo {index + 1} inválido; nada foi executado.");
+        }
+        var completed = 0;
+        foreach (var node in steps)
+        {
+            if (node is not JsonObject step) throw new InvalidOperationException($"Passo {completed + 1} inválido.");
+            var action = step["action"]?.GetValue<string>() ?? "";
+            if (action is not ("computer_click" or "computer_key" or "computer_type" or "computer_wait"))
+                throw new InvalidOperationException($"Ação do passo {completed + 1} não permitida.");
+            var active = await Call(new JsonObject { ["name"] = "computer_active_window", ["arguments"] = new JsonObject() });
+            var activeText = active["content"]?[0]?["text"]?.GetValue<string>() ?? "{}";
+            var activeTitle = JsonNode.Parse(activeText)?["title"]?.GetValue<string>() ?? "";
+            if (!activeTitle.Contains(expectedTitle, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Sequência interrompida antes do passo {completed + 1}: a janela ativa mudou. {completed} passo(s) executado(s).");
+            var arguments = step["arguments"] as JsonObject ?? new JsonObject();
+            await Call(new JsonObject { ["name"] = action, ["arguments"] = arguments.DeepClone() });
+            completed++;
+        }
+        return TextResult(JsonSerializer.Serialize(new { completed, window = expectedTitle }));
+    }
     throw new InvalidOperationException("Ferramenta MCP desconhecida.");
 }
 
@@ -117,7 +159,9 @@ static JsonArray ToolDefinitions() => JsonNode.Parse("""
  {"name":"computer_click","description":"Clica somente dentro da janela ativa, em coordenadas vistas em screenshot.","inputSchema":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"button":{"type":"string","enum":["left","right","double"]}},"required":["x","y"],"additionalProperties":false}},
  {"name":"computer_type","description":"Digita texto não sensível por clipboard temporário.","inputSchema":{"type":"object","properties":{"text":{"type":"string","minLength":1,"maxLength":10000}},"required":["text"],"additionalProperties":false}},
  {"name":"computer_key","description":"Envia uma tecla permitida para a janela ativa.","inputSchema":{"type":"object","properties":{"key":{"type":"string","enum":["ENTER","TAB","SHIFT_TAB","ESC","BACKSPACE","DELETE","UP","DOWN","LEFT","RIGHT","HOME","END","CTRL_A","CTRL_C","CTRL_V","F5","ALT_F4"]}},"required":["key"],"additionalProperties":false}},
- {"name":"computer_wait","description":"Aguarda transição visual por no máximo 10 segundos.","inputSchema":{"type":"object","properties":{"milliseconds":{"type":"integer","minimum":100,"maximum":10000}},"required":["milliseconds"],"additionalProperties":false}}
+ {"name":"computer_wait","description":"Aguarda transição visual por no máximo 10 segundos.","inputSchema":{"type":"object","properties":{"milliseconds":{"type":"integer","minimum":100,"maximum":10000}},"required":["milliseconds"],"additionalProperties":false}},
+ {"name":"computer_wait_for_title","description":"Aguarda até 20 segundos uma janela com o título esperado ficar ativa, sem ciclos de prints e esperas no chat.","inputSchema":{"type":"object","properties":{"contains":{"type":"string","minLength":1,"maxLength":120},"timeoutMilliseconds":{"type":"integer","minimum":100,"maximum":20000}},"required":["contains","timeoutMilliseconds"],"additionalProperties":false}},
+ {"name":"computer_sequence","description":"Executa até 10 passos determinísticos na mesma janela ativa, conferindo seu título antes de cada passo; retorna apenas um resumo. Capture telas nos pontos de decisão.","inputSchema":{"type":"object","properties":{"expectedWindowTitle":{"type":"string","minLength":1,"maxLength":120},"steps":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"object","properties":{"action":{"type":"string","enum":["computer_click","computer_key","computer_type","computer_wait"]},"arguments":{"type":"object"}},"required":["action","arguments"],"additionalProperties":false}}},"required":["expectedWindowTitle","steps"],"additionalProperties":false}}
 ]
 """)!.AsArray();
 static JsonObject TextResult(string text) => new() { ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }) };

@@ -28,27 +28,46 @@ const selectedComponents = form => [...(form.querySelectorAll('.component-row in
   .filter(input => input.checked)
   .map(input => ({ repositoryId: input.dataset.repositoryId, release: input.parentElement.querySelector('input[type="text"]').value }));
 
+const ticketElement = document.querySelector('[data-ticket-id]');
+const ticket = ticketElement ? {
+  id: ticketElement.dataset.ticketId,
+  agent: ticketElement.dataset.agent,
+  branchType: ticketElement.dataset.branchType,
+  sprint: ticketElement.dataset.sprint,
+  release: ticketElement.dataset.release,
+  delivery: ticketElement.dataset.delivery
+} : null;
 const sessionFeedback = $('#session-feedback');
 const sessionAction = async (buttonId, action, successMessage) => {
   const button = $(buttonId);
-  if (!button || !window.centralTicket?.id) return;
+  if (!button) return;
+  if (!ticket?.id) {
+    if (sessionFeedback) {
+      sessionFeedback.textContent = 'Não foi possível identificar o ticket nesta página. Atualize a Central e tente novamente.';
+      sessionFeedback.hidden = false;
+      sessionFeedback.classList.remove('field-help');
+      sessionFeedback.classList.add('form-error');
+    }
+    return;
+  }
   button.disabled = true;
-  if (sessionFeedback) sessionFeedback.hidden = true;
+  if (sessionFeedback) {
+    sessionFeedback.textContent = 'A Central esta preparando a worktree, validando os pre-requisitos e abrindo o agente...';
+    sessionFeedback.hidden = false;
+    sessionFeedback.classList.remove('form-error');
+    sessionFeedback.classList.add('field-help');
+  }
   try {
     const result = await action();
     if (sessionFeedback) { sessionFeedback.textContent = result.message || successMessage; sessionFeedback.hidden = false; sessionFeedback.classList.remove('form-error'); sessionFeedback.classList.add('field-help'); }
-    if (buttonId === '#prepare-worktree') {
-      const check = await fetch(`/api/tickets/${encodeURIComponent(window.centralTicket.id)}/preflight`);
-      const preflight = await check.json();
-      if (!preflight.ok) throw new Error(`Pré-flight bloqueado: ${(preflight.blocking || []).join('; ')}`);
-      if (sessionFeedback) sessionFeedback.textContent = 'Worktree preparada e pré-flight aprovado. Você já pode abrir a conversa.';
-    }
   } catch (error) {
-    if (sessionFeedback) { sessionFeedback.textContent = error.message; sessionFeedback.hidden = false; sessionFeedback.classList.add('form-error'); }
+    if (sessionFeedback) { sessionFeedback.textContent = error.message; sessionFeedback.hidden = false; sessionFeedback.classList.remove('field-help'); sessionFeedback.classList.add('form-error'); }
   } finally { button.disabled = false; }
 };
-$('#prepare-worktree')?.addEventListener('click', () => sessionAction('#prepare-worktree', () => post(`/api/tickets/${encodeURIComponent(window.centralTicket.id)}/prepare`), 'Worktree preparada.'));
-$('#start-session')?.addEventListener('click', () => sessionAction('#start-session', () => post(`/api/tickets/${encodeURIComponent(window.centralTicket.id)}/start`), 'Conversa iniciada.'));
+$('#start-session-form')?.addEventListener('submit', event => {
+  event.preventDefault();
+  sessionAction('#start-session', () => post(`/api/tickets/${encodeURIComponent(ticket.id)}/start`), 'Conversa iniciada.');
+});
 
 const ticketDialog = $('#ticket-dialog');
 if (ticketDialog) {
@@ -285,7 +304,6 @@ const renderMarkdown = (host, source) => {
   host.append(fragment);
 };
 
-const ticket = window.centralTicket;
 if (ticket) {
   const dialog = $('#registration-dialog');
   $('#edit-ticket').onclick = () => {
@@ -315,6 +333,18 @@ if (ticket) {
     try { await post(`/api/tickets/${encodeURIComponent(ticket.id)}/complete`); location.reload(); }
     catch (error) { alert(error.message); button.disabled = false; }
   };
+  $('#delete-ticket')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    if (!confirm(`Excluir ${ticket.id} da Central? O cadastro e os anexos serao arquivados para recuperacao. Nenhuma worktree ou branch sera apagada.`)) return;
+    button.disabled = true;
+    try {
+      await post(`/api/tickets/${encodeURIComponent(ticket.id)}/delete`);
+      location.assign('/');
+    } catch (error) {
+      showFeedback(error.message, true);
+      button.disabled = false;
+    }
+  });
 }
 
 if (ticket) {
@@ -323,11 +353,26 @@ if (ticket) {
     sessionFeedback.textContent = message; sessionFeedback.hidden = false;
     sessionFeedback.classList.toggle('form-error', failed); sessionFeedback.classList.toggle('field-help', !failed);
   };
+  $('#retry-azure-attachments')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'Baixando anexos...';
+    try {
+      const result = await post(`/api/tickets/${encodeURIComponent(ticket.id)}/attachments/retry`);
+      if (result.missing?.length) showFeedback(`Ainda faltam anexos: ${result.missing.join(', ')}${result.warnings?.length ? ` — ${result.warnings.join('; ')}` : ''}`, true);
+      else location.reload();
+    } catch (error) {
+      showFeedback(error.message, true);
+      button.disabled = false;
+      button.textContent = 'Recuperar anexos do Azure';
+    }
+  });
   $('#focus-session')?.addEventListener('click', async event => {
-    event.currentTarget.disabled = true;
+    const button = event.currentTarget;
+    button.disabled = true;
     try { const result = await post(`/api/tickets/${encodeURIComponent(ticket.id)}/focus`); showFeedback(result.message); }
     catch (error) { showFeedback(error.message, true); }
-    finally { event.currentTarget.disabled = false; }
+    finally { button.disabled = false; }
   });
   document.querySelectorAll('[data-open]').forEach(button => button.addEventListener('click', async () => {
     try { const result = await post(`/api/tickets/${encodeURIComponent(ticket.id)}/open`, { kind: button.dataset.open }); showFeedback(result.message); }
@@ -367,12 +412,15 @@ if (ticket) {
     } catch (error) { showFeedback(error.message, true); }
     finally { button.disabled = false; attachmentInput.value = ''; }
   });
-  $('#sync-memory')?.addEventListener('click', async event => {
-    const button = event.currentTarget; button.disabled = true;
+  $('#sync-memory-form')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = $('#sync-memory'); button.disabled = true;
+    const label = button.textContent; button.textContent = 'Sincronizando...';
+    showFeedback('Enviando o aprendizado deste ticket para o AI Memory...');
     try {
       const result = await post(`/api/tickets/${encodeURIComponent(ticket.id)}/memory-sync`);
-      showFeedback(result.remote === 'synced' ? 'Conhecimento sincronizado com o AI Memory.' : 'Conhecimento preservado na fila local para nova tentativa.');
+      showFeedback(result.remote === 'synced' ? (result.detail || 'Conhecimento sincronizado com o AI Memory.') : (result.detail || 'Conhecimento preservado na fila local para nova tentativa.'));
     } catch (error) { showFeedback(error.message, true); }
-    finally { button.disabled = false; }
+    finally { button.disabled = false; button.textContent = label; }
   });
 }

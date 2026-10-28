@@ -21,6 +21,8 @@ public sealed class AiMemoryServiceTests : IDisposable
         var result = await service.SyncTicket(Ticket(), CancellationToken.None);
 
         Assert.Equal("synced", result["remote"]?.GetValue<string>());
+        Assert.Contains(handler.Accept, value => value.Equals("application/json", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(handler.Accept, value => value.Equals("text/event-stream", StringComparison.OrdinalIgnoreCase));
         Assert.Contains("notes/central-tickets/ger5811.md", handler.Body);
         var sentBody = JsonNode.Parse(handler.Body)?["params"]?["arguments"]?["body"]?.GetValue<string>() ?? "";
         Assert.Contains("escopo: 2", sentBody);
@@ -50,7 +52,7 @@ public sealed class AiMemoryServiceTests : IDisposable
         "GER5811", "GER5811", "166", "main", "Escopo seguro de teste", "Teste do AI Memory",
         "no_commit", "feature", "C:/git/ss_erp_tag1", "ss_erp_tag1", null, null, "claude", [],
         null, null, false, null, [], null, null, null, "entregue", "Entregue", JsonDocument.Parse("{\"stage\":\"entregue\",\"review\":{\"verdict\":\"OK password=hunter2\"},\"tests\":[]}").RootElement,
-        null, "none", null, null, [], new AttachmentDetails("", false, [], []),
+        null, "none", null, null, null, [], new AttachmentDetails("", false, [], []),
         new RiskSummary("none", "Histórico de entrega", []),
         new QualitySummary(true, true, [], new QualityCounts(0, 0, 0)), new { scope_expansions = 2, tests_not_executed = 3 });
 
@@ -60,9 +62,11 @@ public sealed class AiMemoryServiceTests : IDisposable
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
     {
         public string Body { get; private set; } = "";
+        public List<string> Accept { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            Accept.AddRange(request.Headers.Accept.Select(header => header.MediaType ?? ""));
             return response(request);
         }
     }

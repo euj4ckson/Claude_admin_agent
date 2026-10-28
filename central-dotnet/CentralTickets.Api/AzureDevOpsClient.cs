@@ -110,17 +110,12 @@ public sealed partial class AzureDevOpsClient
         var release = input.Release;
         var scope = input.Scope ?? preview.Suggested.Scope;
         var title = input.Title ?? preview.Suggested.Title;
-        var created = _tickets.Create(new CreateTicketRequest(
-            ticket, sprint, release, scope, title, delivery, branchType, input.Agent ?? "claude",
-            repositoryId, null, selected.Select(file => file.Name).ToArray(), input.Components,
-            JsonSerializer.SerializeToElement(preview.Source, JsonOptions)));
-        var canonicalTicketId = created.GetProperty("id").GetString()!;
-
         var warnings = preview.Warnings.ToList();
         if (preview.Suggested.Ticket is null && !string.IsNullOrWhiteSpace(ticket)) warnings.RemoveAll(message => message.Contains("código do ticket", StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(preview.Suggested.Sprint) && !string.IsNullOrWhiteSpace(sprint)) warnings.RemoveAll(message => message.Contains("sprint", StringComparison.OrdinalIgnoreCase));
-        var targetDirectory = Path.Combine(_referenceRoot, canonicalTicketId.ToLowerInvariant());
-        Directory.CreateDirectory(targetDirectory);
+        Directory.CreateDirectory(_referenceRoot);
+        var stagingDirectory = Path.Combine(_referenceRoot, ".azure-import-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stagingDirectory);
         long totalBytes = 0;
         var downloaded = 0;
         foreach (var attachment in selected)
@@ -130,9 +125,101 @@ public sealed partial class AzureDevOpsClient
                 var content = await DownloadAttachmentAsync(attachment, pat!, cancellationToken);
                 totalBytes += content.Length;
                 if (totalBytes > MaxTotalAttachmentBytes) throw new TicketOperationException("O limite total de 200 MB de anexos foi atingido.");
-                var target = Path.GetFullPath(Path.Combine(targetDirectory, attachment.Name));
-                if (!target.StartsWith(Path.GetFullPath(targetDirectory) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                var target = Path.GetFullPath(Path.Combine(stagingDirectory, attachment.Name));
+                if (!target.StartsWith(Path.GetFullPath(stagingDirectory) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                     throw new TicketOperationException("Anexo fora da pasta de referência permitida.");
+                await File.WriteAllBytesAsync(target, content, cancellationToken);
+                downloaded++;
+            }
+            catch (Exception error) when (error is HttpRequestException or IOException or TicketOperationException or OperationCanceledException)
+            {
+                if (error is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                {
+                    Directory.Delete(stagingDirectory, recursive: true);
+                    throw;
+                }
+                warnings.Add($"{attachment.Name}: {error.Message}");
+            }
+        }
+        var created = _tickets.Create(new CreateTicketRequest(
+            ticket, sprint, release, scope, title, delivery, branchType, input.Agent ?? "claude",
+            repositoryId, null, selected.Select(file => file.Name).ToArray(), input.Components,
+            JsonSerializer.SerializeToElement(preview.Source, JsonOptions)));
+        var canonicalTicketId = created.GetProperty("id").GetString()!;
+        var targetDirectory = Path.Combine(_referenceRoot, canonicalTicketId.ToLowerInvariant());
+        Directory.CreateDirectory(targetDirectory);
+        foreach (var stagedFile in Directory.EnumerateFiles(stagingDirectory))
+        {
+            var target = Path.Combine(targetDirectory, Path.GetFileName(stagedFile));
+            try { File.Move(stagedFile, target); }
+            catch (IOException error) { warnings.Add($"{Path.GetFileName(stagedFile)}: {error.Message}"); }
+        }
+        Directory.Delete(stagingDirectory, recursive: true);
+        if (!string.IsNullOrWhiteSpace(input.PreviewId)) _previews.TryRemove(input.PreviewId, out _);
+        var eventFile = Path.Combine(_dataRoot, "tickets", canonicalTicketId.ToLowerInvariant(), "events.jsonl");
+        var eventJson = JsonSerializer.Serialize(new { at = DateTimeOffset.UtcNow.ToString("O"), type = "azure", message = $"Importado do Azure work item {preview.Source.Id}; {downloaded}/{selected.Length} anexo(s) baixado(s)." }, JsonOptions);
+        await File.AppendAllTextAsync(eventFile, eventJson + Environment.NewLine, cancellationToken);
+        return new AzureImportResponse(created, preview, downloaded, warnings);
+    }
+
+    public async Task<AzureAttachmentRetryResponse> RetryAttachments(string ticketId, CancellationToken cancellationToken)
+    {
+        ticketId = (ticketId ?? "").Trim().ToLowerInvariant();
+        if (!Regex.IsMatch(ticketId, "^[a-z]{2,8}[0-9]{2,8}$", RegexOptions.CultureInvariant))
+            throw new TicketOperationException("Informe um identificador de ticket valido.");
+
+        var ticketDirectory = Path.Combine(_dataRoot, "tickets", ticketId);
+        var ticketFile = Path.Combine(ticketDirectory, "ticket.json");
+        if (!File.Exists(ticketFile)) throw new TicketOperationException("Ticket nao encontrado.", 404);
+        using var ticketDocument = JsonDocument.Parse(await File.ReadAllTextAsync(ticketFile, cancellationToken));
+        var ticketRoot = ticketDocument.RootElement;
+        if (!ticketRoot.TryGetProperty("azure_source", out var source)
+            || !source.TryGetProperty("id", out var sourceIdValue)
+            || !sourceIdValue.TryGetInt64(out var sourceId)
+            || sourceId <= 0)
+            throw new TicketOperationException("Este ticket nao possui origem Azure para recuperar anexos.", 409);
+
+        var expectedNames = ticketRoot.TryGetProperty("attachments", out var attachmentValues)
+            && attachmentValues.ValueKind == JsonValueKind.Array
+            ? attachmentValues.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String)
+                .Select(value => value.GetString()!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+            : [];
+        if (expectedNames.Length == 0) return new AzureAttachmentRetryResponse(0, [], []);
+
+        var referenceDirectory = Path.GetFullPath(Path.Combine(_referenceRoot, ticketId));
+        var referenceRoot = Path.GetFullPath(_referenceRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!referenceDirectory.StartsWith(referenceRoot, StringComparison.OrdinalIgnoreCase))
+            throw new TicketOperationException("Pasta de anexos fora da raiz configurada.", 403);
+
+        var existingNames = Directory.Exists(referenceDirectory)
+            ? Directory.EnumerateFiles(referenceDirectory).Select(Path.GetFileName).Where(name => name is not null).Select(name => name!).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var missingNames = expectedNames.Where(name => !existingNames.Contains(name)).ToArray();
+        if (missingNames.Length == 0) return new AzureAttachmentRetryResponse(0, [], []);
+
+        var pat = await _patProvider(cancellationToken);
+        var preview = await FetchWorkItem(MakeReference(sourceId), pat, cancellationToken);
+        var available = preview.Attachments.Where(file => missingNames.Contains(file.Name, StringComparer.OrdinalIgnoreCase)).ToArray();
+        var warnings = missingNames.Except(available.Select(file => file.Name), StringComparer.OrdinalIgnoreCase)
+            .Select(name => $"{name}: anexo nao esta mais relacionado ao work item no Azure.").ToList();
+        if (available.Length > 40 || available.Any(file => file.Size > MaxAttachmentBytes)
+            || available.Sum(file => file.Size ?? 0) > MaxTotalAttachmentBytes)
+            throw new TicketOperationException("Os anexos ausentes excedem os limites permitidos para recuperacao.");
+
+        Directory.CreateDirectory(referenceDirectory);
+        var downloaded = 0;
+        long totalBytes = 0;
+        foreach (var attachment in available)
+        {
+            try
+            {
+                var target = Path.GetFullPath(Path.Combine(referenceDirectory, attachment.Name));
+                if (!target.StartsWith(referenceDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new TicketOperationException("Anexo fora da pasta de referencia permitida.");
+                if (File.Exists(target)) continue;
+                var content = await DownloadAttachmentAsync(attachment, pat, cancellationToken);
+                totalBytes += content.Length;
+                if (totalBytes > MaxTotalAttachmentBytes) throw new TicketOperationException("O limite total de anexos foi atingido.");
                 await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true);
                 await output.WriteAsync(content, cancellationToken);
                 downloaded++;
@@ -143,11 +230,16 @@ public sealed partial class AzureDevOpsClient
                 warnings.Add($"{attachment.Name}: {error.Message}");
             }
         }
-        if (!string.IsNullOrWhiteSpace(input.PreviewId)) _previews.TryRemove(input.PreviewId, out _);
-        var eventFile = Path.Combine(_dataRoot, "tickets", canonicalTicketId.ToLowerInvariant(), "events.jsonl");
-        var eventJson = JsonSerializer.Serialize(new { at = DateTimeOffset.UtcNow.ToString("O"), type = "azure", message = $"Importado do Azure work item {preview.Source.Id}; {downloaded}/{selected.Length} anexo(s) baixado(s)." }, JsonOptions);
-        await File.AppendAllTextAsync(eventFile, eventJson + Environment.NewLine, cancellationToken);
-        return new AzureImportResponse(created, preview, downloaded, warnings);
+
+        var eventJson = JsonSerializer.Serialize(new
+        {
+            at = DateTimeOffset.UtcNow.ToString("O"),
+            type = "azure_anexos_retentativa",
+            message = $"Recuperacao Azure do work item {sourceId}: {downloaded}/{missingNames.Length} anexo(s) baixado(s)."
+        }, JsonOptions);
+        await File.AppendAllTextAsync(Path.Combine(ticketDirectory, "events.jsonl"), eventJson + Environment.NewLine, cancellationToken);
+        var remaining = expectedNames.Where(name => !Directory.EnumerateFiles(referenceDirectory).Select(Path.GetFileName).Contains(name, StringComparer.OrdinalIgnoreCase)).ToArray();
+        return new AzureAttachmentRetryResponse(downloaded, remaining, warnings);
     }
 
     private async Task<AzurePreviewResponse> FetchWorkItem(ParsedAzureReference parsed, string pat, CancellationToken cancellationToken)
@@ -162,8 +254,11 @@ public sealed partial class AzureDevOpsClient
         var fields = root.TryGetProperty("fields", out var fieldsValue) ? fieldsValue : default;
         var title = Field(fields, "System.Title")?.Trim() ?? "";
         var description = HtmlToText(Field(fields, "System.Description") ?? Field(fields, "Microsoft.VSTS.Common.Description") ?? "");
+        var acceptanceCriteria = HtmlToText(Field(fields, "Microsoft.VSTS.Common.AcceptanceCriteria") ?? "");
+        var reproductionSteps = HtmlToText(Field(fields, "Microsoft.VSTS.TCM.ReproSteps") ?? "");
+        var systemInfo = HtmlToText(Field(fields, "Microsoft.VSTS.TCM.SystemInfo") ?? "");
         var tags = Field(fields, "System.Tags") ?? "";
-        var ticket = TicketRegex().Match($"{title} {tags} {description}");
+        var ticket = TicketRegex().Match($"{title} {tags} {description} {acceptanceCriteria} {reproductionSteps}");
         var sprint = Field(fields, "Custom.Sprint") ?? Field(fields, "Custom.SprintNumber") ?? FindSprint(fields);
         var attachments = new List<AzureAttachment>();
         if (root.TryGetProperty("relations", out var relations) && relations.ValueKind == JsonValueKind.Array)
@@ -183,19 +278,30 @@ public sealed partial class AzureDevOpsClient
         var warnings = new List<string>();
         if (!ticket.Success) warnings.Add("Não encontrei o código do ticket no título, tags ou descrição; informe-o manualmente.");
         if (string.IsNullOrWhiteSpace(sprint) || !Regex.IsMatch(sprint, "^\\d{1,6}$")) warnings.Add("Não encontrei uma sprint numérica; informe-a manualmente.");
-        var scope = string.IsNullOrWhiteSpace(description) ? title : description;
+        var scopeSections = new[]
+        {
+            ("DescriÃ§Ã£o", description),
+            ("CritÃ©rios de aceite", acceptanceCriteria),
+            ("Passos para reproduÃ§Ã£o", reproductionSteps),
+            ("InformaÃ§Ãµes do sistema", systemInfo)
+        };
+        var scope = string.Join("\n\n", scopeSections
+            .Where(section => !string.IsNullOrWhiteSpace(section.Item2))
+            .Select(section => $"{section.Item1}:\n{section.Item2}"));
+        if (string.IsNullOrWhiteSpace(scope)) warnings.Add("DescriÃ§Ã£o, critÃ©rios de aceite e detalhes do ticket ausentes; informe o escopo manualmente.");
         if (scope.Length < 20) warnings.Add("A descrição importada é curta; revise o escopo antes de cadastrar.");
         var suggested = ticket.Success ? ticket.Value.ToUpperInvariant() : null;
         var source = new AzureWorkItemSource(parsed.Id, parsed.Url, organization, project, DateTimeOffset.UtcNow.ToString("O"));
         return new AzurePreviewResponse(null, source,
-            new AzureWorkItemFields(title, description, Field(fields, "System.State") ?? "", tags, Field(fields, "System.IterationPath") ?? "", Field(fields, "System.AreaPath") ?? ""),
+            new AzureWorkItemFields(title, description, acceptanceCriteria, reproductionSteps, systemInfo,
+                Field(fields, "System.State") ?? "", tags, Field(fields, "System.IterationPath") ?? "", Field(fields, "System.AreaPath") ?? ""),
             new AzureTicketSuggestion(suggested, title[..Math.Min(160, title.Length)], scope, sprint ?? "", RepositorySuggestion(suggested), "", Regex.IsMatch(tags, "^hotfix|bug", RegexOptions.IgnoreCase) ? "hotfix" : "feature"),
             attachments, warnings);
     }
 
     private async Task<byte[]> DownloadAttachmentAsync(AzureAttachment attachment, string pat, CancellationToken cancellationToken)
     {
-        using var response = await SendAzureAsync(attachment.Url, pat, "*/*", cancellationToken);
+        using var response = await SendAzureAsync(attachment.Url, pat, "*/*", cancellationToken, "azure-attachments");
         if (response.Content.Headers.ContentLength > MaxAttachmentBytes) throw new TicketOperationException($"O anexo {attachment.Name} ultrapassa 50 MB.");
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var memory = new MemoryStream();
@@ -210,13 +316,13 @@ public sealed partial class AzureDevOpsClient
         return memory.ToArray();
     }
 
-    private async Task<HttpResponseMessage> SendAzureAsync(string url, string pat, string accept, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> SendAzureAsync(string url, string pat, string accept, CancellationToken cancellationToken, string clientName = "azure")
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Accept.ParseAdd(accept);
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.ASCII.GetBytes($":{pat}")));
         HttpResponseMessage response;
-        try { response = await _clients.CreateClient("azure").SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken); }
+        try { response = await _clients.CreateClient(clientName).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken); }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested) { throw new TicketOperationException("A consulta ao Azure excedeu o tempo limite.", 504); }
         catch (HttpRequestException) { throw new TicketOperationException("Não foi possível conectar ao Azure DevOps.", 502); }
         if (response.IsSuccessStatusCode) return response;
@@ -343,13 +449,14 @@ public sealed partial class AzureDevOpsClient
 
 public sealed record AzurePreviewResponse(string? PreviewId, AzureWorkItemSource Source, AzureWorkItemFields Fields, AzureTicketSuggestion Suggested, IReadOnlyList<AzureAttachment> Attachments, IReadOnlyList<string> Warnings);
 public sealed record AzureWorkItemSource(long Id, string Url, string Organization, string Project, string ImportedAt);
-public sealed record AzureWorkItemFields(string Title, string Description, string State, string Tags, string Iteration, string Area);
+public sealed record AzureWorkItemFields(string Title, string Description, string AcceptanceCriteria, string ReproductionSteps, string SystemInfo, string State, string Tags, string Iteration, string Area);
 public sealed record AzureTicketSuggestion(string? Ticket, string Title, string Scope, string Sprint, string? RepositoryId, string Release, string BranchType);
 public sealed record AzureAttachment(string Name, string Url, long? Size, string? Comment);
 public sealed record AzureImportRequest(string? Reference, string? PreviewId, string? Ticket, string? Sprint, string? Release, string? Title, string? Scope, string? Repository, string? Agent, string? BranchType, string? Delivery, string[]? Attachments, bool? DownloadAttachments, JsonElement? Components);
 public sealed record AzurePreviewRequest(string? Reference);
 public sealed record AzurePatRequest(string? Pat);
 public sealed record AzureImportResponse(JsonElement Ticket, AzurePreviewResponse Preview, int Downloaded, IReadOnlyList<string> Warnings);
+public sealed record AzureAttachmentRetryResponse(int Downloaded, IReadOnlyList<string> Missing, IReadOnlyList<string> Warnings);
 internal sealed record ParsedAzureReference(long Id, string Url);
 
 internal static class Dpapi

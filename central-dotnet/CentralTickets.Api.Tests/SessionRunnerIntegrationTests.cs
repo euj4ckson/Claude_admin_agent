@@ -132,6 +132,7 @@ public sealed class SessionRunnerIntegrationTests : IDisposable
         Assert.Equal(claudeSession, updatedTicket["sessionId"]?.GetValue<string>());
         Assert.Equal(new[] { originalClaudeSession, claudeSession }, updatedTicket["sessionIds"]!.AsArray().Select(item => item!.GetValue<string>()));
         Assert.True(ReadJson(Path.Combine(claudeDir, "metrics.json"))["totals"]?["prompts"]?.GetValue<int>() > 0);
+        Assert.True(updatedTicket["firstPromptSubmitted"]?.GetValue<bool>());
 
         var claudeStateFile = Path.Combine(claudeState, "estado.json");
         var blockedState = ReadJson(claudeStateFile);

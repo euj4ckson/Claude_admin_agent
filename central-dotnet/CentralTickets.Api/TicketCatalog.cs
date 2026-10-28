@@ -97,7 +97,7 @@ public sealed partial class TicketCatalog
             record.UpdatedAt, record.Prepared, record.SessionId, record.SessionIds ?? [],
             record.Branch, record.Worktree, record.BaseSha, summary.Stage,
             summary.StageLabel, state, summary.StateError,
-            summary.Session, runtime, ReadElement(Path.Combine(ticketDirectory, "approval.json")),
+            summary.Session, runtime, ReadElement(Path.Combine(ticketDirectory, "approval.json")), record.AzureSource,
             events, new AttachmentDetails(attachmentDirectory, Directory.Exists(attachmentDirectory),
                 attachmentNames!, missing), summary.Risk, summary.Quality, summary.Metrics);
     }
@@ -247,7 +247,7 @@ public sealed partial class TicketCatalog
 
     private static JsonNode? ReadNode(string file)
     {
-        try { return JsonNode.Parse(File.ReadAllText(file)); }
+        try { return JsonNode.Parse(SharedFileAccess.ReadAllText(file)); }
         catch (FileNotFoundException) { return null; }
         catch (DirectoryNotFoundException) { return null; }
         catch (JsonException) { return null; }
@@ -295,7 +295,7 @@ public sealed partial class TicketCatalog
     {
         try
         {
-            using var stream = File.OpenRead(file);
+            using var stream = SharedFileAccess.OpenRead(file);
             return JsonSerializer.Deserialize<T>(stream, JsonOptions);
         }
         catch (FileNotFoundException) { return default; }
@@ -308,7 +308,7 @@ public sealed partial class TicketCatalog
     {
         try
         {
-            using var stream = File.OpenRead(file);
+            using var stream = SharedFileAccess.OpenRead(file);
             using var document = JsonDocument.Parse(stream);
             return document.RootElement.Clone();
         }
@@ -350,7 +350,8 @@ public sealed partial class TicketCatalog
         string? SessionId = null,
         string[]? SessionIds = null,
         string? BaseSha = null,
-        JsonElement[]? Components = null)
+        JsonElement[]? Components = null,
+        [property: JsonPropertyName("azure_source")] JsonElement? AzureSource = null)
     {
         [JsonIgnore] public string[] Attachments => AttachmentsValue ?? [];
     }
@@ -379,7 +380,7 @@ public sealed record TicketDetails(
     JsonElement? RepositoryStandard, string? IntegrationBranch, string Agent, JsonElement[] Components,
     string? CreatedAt, string? UpdatedAt, bool Prepared, string? SessionId, string[] SessionIds,
     string? Branch, string? Worktree, string? BaseSha, string Stage, string StageLabel,
-    JsonElement? State, string? StateError, string Session, object? Runtime, JsonElement? Approval,
+    JsonElement? State, string? StateError, string Session, object? Runtime, JsonElement? Approval, JsonElement? AzureSource,
     IReadOnlyList<TicketEvent> Events,
     [property: JsonPropertyName("attachments")] AttachmentDetails AttachmentInfo,
     RiskSummary Risk, QualitySummary Quality, object? Metrics);
