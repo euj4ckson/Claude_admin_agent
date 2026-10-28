@@ -1,0 +1,120 @@
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 35px;
+  margin-left: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: 600 11px "DM Sans", Segoe UI, sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.theme-toggle:hover { border-color: var(--orange); }
+.theme-toggle:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+.theme-toggle span:first-child { font-size: 16px; line-height: 1; }
+
+:root[data-theme="dark"] {
+  --ink: #e1e8f2;
+  --muted: #a1afc1;
+  --line: #34445a;
+  --orange: #ef9474;
+  --orange-soft: #422d2c;
+  --navy: #f1f5fa;
+  --green: #70c7a4;
+  --shadow: 0 10px 30px rgba(0, 0, 0, .18);
+  color: var(--ink);
+  background: #111a26;
+}
+:root[data-theme="dark"] body { background: linear-gradient(180deg, #182435 0, #111a26 300px); }
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .sidebar,
+:root[data-theme="dark"] .stat-card,
+:root[data-theme="dark"] .list-panel,
+:root[data-theme="dark"] .detail-card,
+:root[data-theme="dark"] .usage-card,
+:root[data-theme="dark"] dialog { background: #1b2839; color: var(--ink); }
+:root[data-theme="dark"] .ticket-filters,
+:root[data-theme="dark"] .search,
+:root[data-theme="dark"] .search input,
+:root[data-theme="dark"] .form-grid input,
+:root[data-theme="dark"] .form-grid textarea,
+:root[data-theme="dark"] .form-grid select,
+:root[data-theme="dark"] .ticket-filters select,
+:root[data-theme="dark"] .secondary,
+:root[data-theme="dark"] .sidebar-toggle,
+:root[data-theme="dark"] .theme-toggle { background: #243348; color: var(--ink); border-color: var(--line); }
+:root[data-theme="dark"] .search input { background: transparent; }
+:root[data-theme="dark"] .ticket-row,
+:root[data-theme="dark"] .card-heading,
+:root[data-theme="dark"] .detail-title,
+:root[data-theme="dark"] .file-list li,
+:root[data-theme="dark"] .event-list li { border-color: var(--line); }
+:root[data-theme="dark"] .ticket-row:hover,
+:root[data-theme="dark"] .sidebar-link:hover,
+:root[data-theme="dark"] .sidebar-link.selected,
+:root[data-theme="dark"] .sidebar-toggle:hover { background: #2a3b51; }
+:root[data-theme="dark"] .stat-card:hover { border-color: #637b98; }
+:root[data-theme="dark"] .stat-card.selected { border-color: var(--orange); box-shadow: 0 0 0 2px #ef94742e, var(--shadow); }
+:root[data-theme="dark"] .connection,
+:root[data-theme="dark"] .sidebar-link,
+:root[data-theme="dark"] .back-link,
+:root[data-theme="dark"] .ticket-side,
+:root[data-theme="dark"] .ticket-side time,
+:root[data-theme="dark"] .scope-text,
+:root[data-theme="dark"] .event-list p,
+:root[data-theme="dark"] .tracking-card p,
+:root[data-theme="dark"] .tracking-card small,
+:root[data-theme="dark"] .markdown-view,
+:root[data-theme="dark"] .md-outline a { color: #b4c2d4; }
+:root[data-theme="dark"] .sidebar-link.selected { color: var(--navy); }
+:root[data-theme="dark"] .tracking-card,
+:root[data-theme="dark"] .azure-preview,
+:root[data-theme="dark"] .md-outline,
+:root[data-theme="dark"] .sidebar-note,
+:root[data-theme="dark"] .empty-icon,
+:root[data-theme="dark"] .content-dialog pre,
+:root[data-theme="dark"] .markdown-view pre,
+:root[data-theme="dark"] .markdown-view blockquote { background: #223247; border-color: var(--line); color: var(--ink); }
+:root[data-theme="dark"] .markdown-view code { background: #304259; color: var(--ink); }
+:root[data-theme="dark"] .markdown-view pre code { background: transparent; }
+:root[data-theme="dark"] .status-active,
+:root[data-theme="dark"] .status-waiting,
+:root[data-theme="dark"] .risk-yellow { background: #493a26; color: #f6cd83; }
+:root[data-theme="dark"] .status-blocked,
+:root[data-theme="dark"] .risk-red,
+:root[data-theme="dark"] .form-error,
+:root[data-theme="dark"] .danger { background: #4a2c34; color: #ffb4ad; border-color: #75434b; }
+:root[data-theme="dark"] .status-done,
+:root[data-theme="dark"] .risk-green { background: #254639; color: #a0e1be; }
+:root[data-theme="dark"] .risk-badge,
+:root[data-theme="dark"] .sidebar-link b,
+:root[data-theme="dark"] .usage-status,
+:root[data-theme="dark"] .migration-pill { background: #304159; color: #c9d7e8; border-color: var(--line); }
+:root[data-theme="dark"] .content-actions .active { background: #49342f; color: #ffc2aa; border-color: #785044; }
+:root[data-theme="dark"] .usage-track { background: #304159; }
+:root[data-theme="dark"] .environment { background: #493a26; color: #f6cd83; border-color: #745c34; }
+:root[data-theme="dark"] .form-grid label { color: #c3d0e0; }
+:root[data-theme="dark"] .markdown-view th,
+:root[data-theme="dark"] .markdown-view tr:nth-child(even) td { background: #28394f; }
+:root[data-theme="dark"] .primary,
+:root[data-theme="dark"] .brand-mark,
+:root[data-theme="dark"] .search button,
+:root[data-theme="dark"] .primary-link { background: #b94e32; color: #fff; }
+:root[data-theme="dark"] .primary:hover,
+:root[data-theme="dark"] .search button:hover,
+:root[data-theme="dark"] .primary-link:hover { background: #a9432a; }
+:root[data-theme="dark"] .danger:hover { background: #5a3038; }
+:root[data-theme="dark"] .home-feedback { background: #254639; color: #a0e1be; border-color: #40735a; }
+:root[data-theme="dark"] .home-feedback.warning { background: #493a26; color: #f6cd83; border-color: #745c34; }
+:root[data-theme="dark"] ::placeholder { color: #93a5bb; opacity: 1; }
+:root[data-theme="dark"] :is(button, a, input, select, textarea, summary):focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+
+@media (max-width: 560px) {
+  .theme-toggle-label { display: none; }
+  .theme-toggle { margin-left: 4px; padding: 6px 8px; }
+}

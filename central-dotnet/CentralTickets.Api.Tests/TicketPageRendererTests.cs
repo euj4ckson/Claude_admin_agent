@@ -42,6 +42,9 @@ public sealed class TicketPageRendererTests
         Assert.Contains("<div class=\"scope-text\">Escopo seguro para o teste.</div>", html);
         Assert.Contains("id=\"delete-ticket\" type=\"button\">Excluir ticket</button>", html);
         Assert.Contains("href=\"/ticket-details.css\"", html);
+        Assert.Contains("href=\"/theme.css\"", html);
+        Assert.Contains("<script src=\"/theme.js\"></script>", html);
+        Assert.Equal(1, html.Split("id=\"theme-toggle\"", StringSplitOptions.None).Length - 1);
         Assert.Equal(1, html.Split("id=\"start-session\"", StringSplitOptions.None).Length - 1);
         Assert.DoesNotContain("Continuar em sessão nova", html);
 
@@ -64,6 +67,7 @@ public sealed class TicketPageRendererTests
         var html = TicketPageRenderer.Index([ticket], [ticket], "active", null, [], null, null, antiforgeryToken: "csrf-test-token");
 
         Assert.Contains("href=\"/style.css\"", html);
+        Assert.Contains("id=\"theme-toggle\"", html);
         Assert.Contains("name=\"stage\" value=\"active\"", html);
         Assert.Contains("id=\"ticket-form\"", html);
         Assert.Contains("id=\"new-ticket\"", html);

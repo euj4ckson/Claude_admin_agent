@@ -131,7 +131,13 @@ public static class TicketPageRenderer
     public static string NotFound(string id) => Layout("Ticket não encontrado", $"<header class=\"topbar\"><a class=\"brand\" href=\"/\">Central</a></header><main class=\"shell\"><div class=\"empty-state\"><h1>Ticket não encontrado</h1><p>Não localizei {E(id)}.</p><a class=\"primary-link\" href=\"/\">Voltar</a></div></main>");
     private static string TicketCard(TicketSummary ticket) => $"""<a class="ticket-row" href="/tickets/{Uri.EscapeDataString(ticket.Id)}"><div class="ticket-main"><span class="ticket-code">{E(ticket.Id)}</span><span class="status {StatusClass(ticket.Stage)}">{E(ticket.StageLabel)}</span><span class="risk-badge risk-{E(ticket.Risk.Level)}">{E(ticket.Risk.Label)}</span><h3>{E(ticket.Title)}</h3><p>{E(ticket.RepositoryId)} · sprint {E(ticket.Sprint)} · {E(ticket.Agent)}</p></div><div class="ticket-side"><span>Atualizado</span><time>{E(FormatDate(ticket.UpdatedAt))}</time></div></a>""";
     private static int MetricInt(JsonElement metrics, string name) => metrics.ValueKind == JsonValueKind.Object && metrics.TryGetProperty(name, out var value) && value.TryGetInt32(out var number) ? number : 0;
-    private static string Layout(string title, string content) => $"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>{E(title)}</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/ticket-details.css"></head><body><div class="app-frame">{content}</div></body></html>""";
+    private static string Layout(string title, string content)
+    {
+        const string themeButton = "<button class=\"theme-toggle\" id=\"theme-toggle\" type=\"button\" aria-label=\"Ativar tema escuro\" title=\"Ativar tema escuro\"><span aria-hidden=\"true\">◐</span><span class=\"theme-toggle-label\">Tema escuro</span></button>";
+        var headerEnd = content.IndexOf("</header>", StringComparison.Ordinal);
+        if (headerEnd >= 0) content = content.Insert(headerEnd, themeButton);
+        return $"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{E(title)}</title><script src="/theme.js"></script><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/ticket-details.css"><link rel="stylesheet" href="/theme.css"></head><body><div class="app-frame">{content}</div></body></html>""";
+    }
     private static string FormToken(string? token) => string.IsNullOrWhiteSpace(token) ? "" : $"<input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"{E(token)}\">";
     private static string E(string? value) => WebUtility.HtmlEncode(value ?? "");
     private static string FormatDate(string? value) => DateTimeOffset.TryParse(value, out var date) ? date.ToLocalTime().ToString("dd/MM/yyyy HH:mm") : "—";
